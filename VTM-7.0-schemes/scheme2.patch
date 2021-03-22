@@ -1,0 +1,1506 @@
+diff --git a/source/Lib/CommonLib/CommonDef.h b/source/Lib/CommonLib/CommonDef.h
+index 1732b46..28f1b12 100644
+--- a/source/Lib/CommonLib/CommonDef.h
++++ b/source/Lib/CommonLib/CommonDef.h
+@@ -232,7 +232,11 @@ static const int MULTI_REF_LINE_IDX[4] =               { 0, 1, 3, 0 };
+ static const int PRED_REG_MIN_WIDTH =                               4;  // Minimum prediction region width for ISP subblocks
+ 
+ static const int NUM_LUMA_MODE =                                   67; ///< Planar + DC + 65 directional mode (4*16 + 1)
++#if NN_CHROMA_PRED_SIGNAL
++static const int NUM_LMC_MODE = 1 + 3; ///< LMC + MDLM_T + MDLM_L
++#else
+ static const int NUM_LMC_MODE =                                    1 + 2; ///< LMC + MDLM_T + MDLM_L
++#endif
+ static const int NUM_INTRA_MODE = (NUM_LUMA_MODE + NUM_LMC_MODE);
+ 
+ static const int NUM_EXT_LUMA_MODE =                               28;
+@@ -251,6 +255,9 @@ static const int NUM_CHROMA_MODE = (5 + NUM_LMC_MODE); ///< total number of chro
+ static const int LM_CHROMA_IDX = NUM_LUMA_MODE; ///< chroma mode index for derived from LM mode
+ static const int MDLM_L_IDX =                          LM_CHROMA_IDX + 1; ///< MDLM_L
+ static const int MDLM_T_IDX =                          LM_CHROMA_IDX + 2; ///< MDLM_T
++#if NN_CHROMA_PRED_SIGNAL
++static const int LM_CHROMA_NN =                        LM_CHROMA_IDX + 3; ///< LM_CHROMA_NN
++#endif
+ static const int DM_CHROMA_IDX =                       NUM_INTRA_MODE; ///< chroma mode index for derived from luma intra mode
+ 
+ static const uint32_t  NUM_TRAFO_MODES_MTS =                            6; ///< Max Intra CU size applying EMT, supported values: 8, 16, 32, 64, 128
+@@ -516,6 +523,9 @@ struct ClpRngs
+ template <typename T> inline T Clip3 (const T minVal, const T maxVal, const T a) { return std::min<T> (std::max<T> (minVal, a) , maxVal); }  ///< general min/max clip
+ template <typename T> inline T ClipBD( const T x, const int bitDepth ) { return Clip3( T( 0 ), T( ( 1 << bitDepth ) - 1 ), x ); }
+ template <typename T> inline T ClipPel (const T a, const ClpRng& clpRng)         { return std::min<T> (std::max<T> (clpRng.min, a) , clpRng.max); }  ///< clip reconstruction
++#if NN_CHROMA_PRED
++template <typename T> inline T LRELU(const T alpha, const T a) { return a > 0 ? a : a * alpha; }
++#endif 
+ 
+ template <typename T> inline void Check3( T minVal, T maxVal, T a)
+ {
+diff --git a/source/Lib/CommonLib/Contexts.cpp b/source/Lib/CommonLib/Contexts.cpp
+index 3280c08..729e677 100755
+--- a/source/Lib/CommonLib/Contexts.cpp
++++ b/source/Lib/CommonLib/Contexts.cpp
+@@ -322,6 +322,16 @@ const CtxSet ContextSetCfg::CclmModeFlag = ContextSetCfg::addCtxSet
+   {   4, },
+ });
+ 
++#if NN_CHROMA_PRED_SIGNAL_SEPARATE
++const CtxSet ContextSetCfg::CclmNnModeFlag = ContextSetCfg::addCtxSet
++({
++  { 26, },
++  { 34, },
++  { 59, },
++  { 4, },
++  });
++#endif
++
+ #if JVET_P0615_CHROMAMODE_CLEANUP
+ const CtxSet ContextSetCfg::CclmModeIdx = ContextSetCfg::addCtxSet
+ ({
+diff --git a/source/Lib/CommonLib/Contexts.h b/source/Lib/CommonLib/Contexts.h
+index 519f6ac..a905886 100644
+--- a/source/Lib/CommonLib/Contexts.h
++++ b/source/Lib/CommonLib/Contexts.h
+@@ -208,6 +208,9 @@ public:
+   static const CtxSet   IntraLumaMpmFlag;
+   static const CtxSet   IntraLumaPlanarFlag;
+   static const CtxSet   CclmModeFlag;
++#if NN_CHROMA_PRED_SIGNAL_SEPARATE
++  static const CtxSet   CclmNnModeFlag;
++#endif
+ #if JVET_P0615_CHROMAMODE_CLEANUP
+   static const CtxSet   CclmModeIdx;
+ #endif
+diff --git a/source/Lib/CommonLib/IntraPrediction.cpp b/source/Lib/CommonLib/IntraPrediction.cpp
+index ad24b54..1ac2942 100644
+--- a/source/Lib/CommonLib/IntraPrediction.cpp
++++ b/source/Lib/CommonLib/IntraPrediction.cpp
+@@ -1417,7 +1417,19 @@ void IntraPrediction::xGetLumaRecPixels(const PredictionUnit &pu, CompArea chrom
+   int iDstStride = 0;
+   Pel* pDst0 = 0;
+   int curChromaMode = pu.intraDir[1];
++
++#if NN_CHROMA_PRED && !NN_CHROMA_PRED_SIGNAL
++  if (curChromaMode == LM_CHROMA_IDX && ((chromaArea.width == 4 && chromaArea.height == 4) || (chromaArea.width == 8 && chromaArea.height == 8) || (chromaArea.width == 16 && chromaArea.height == 16)))
++  {
++    curChromaMode = MDLM_L_IDX;
++  }
++#endif
++
++#if NN_CHROMA_PRED_SIGNAL
++  if ((curChromaMode == LM_CHROMA_NN) || (curChromaMode == MDLM_L_IDX) || (curChromaMode == MDLM_T_IDX))
++#else
+   if ((curChromaMode == MDLM_L_IDX) || (curChromaMode == MDLM_T_IDX))
++#endif
+   {
+     iDstStride = 2 * MAX_CU_SIZE + 1;
+     pDst0 = m_pMdlmTemp + iDstStride + 1;
+@@ -1535,7 +1547,11 @@ void IntraPrediction::xGetLumaRecPixels(const PredictionUnit &pu, CompArea chrom
+   {
+     pDst  = pDst0    - iDstStride;
+     int addedAboveRight = 0;
++#if NN_CHROMA_PRED_SIGNAL
++    if ((curChromaMode == LM_CHROMA_NN) || (curChromaMode == MDLM_L_IDX) || (curChromaMode == MDLM_T_IDX))
++#else
+     if ((curChromaMode == MDLM_L_IDX) || (curChromaMode == MDLM_T_IDX))
++#endif
+     {
+       addedAboveRight = avaiAboveRightUnits*chromaUnitWidth;
+     }
+@@ -1595,7 +1611,11 @@ void IntraPrediction::xGetLumaRecPixels(const PredictionUnit &pu, CompArea chrom
+     piSrc = pRecSrc0 - 2 - logSubWidthC;
+ 
+     int addedLeftBelow = 0;
++#if NN_CHROMA_PRED_SIGNAL
++    if ((curChromaMode == LM_CHROMA_NN) || (curChromaMode == MDLM_L_IDX) || (curChromaMode == MDLM_T_IDX))
++#else
+     if ((curChromaMode == MDLM_L_IDX) || (curChromaMode == MDLM_T_IDX))
++#endif
+     {
+       addedLeftBelow = avaiLeftBelowUnits*chromaUnitHeight;
+     }
+@@ -1628,6 +1648,33 @@ void IntraPrediction::xGetLumaRecPixels(const PredictionUnit &pu, CompArea chrom
+     }
+   }
+ 
++#if NN_CHROMA_PRED
++  // recover LT references for NN chroma prediction
++#if NN_CHROMA_PRED_SIGNAL
++  if ((curChromaMode == LM_CHROMA_NN) &&  bAboveAvaillable && bLeftAvaillable)
++#else
++  if (bAboveAvaillable && bLeftAvaillable)
++#endif
++  {
++    pDst = pDst0 - 1 - iDstStride;
++
++    piSrc = pRecSrc0 - 2 - logSubWidthC - iRecStride2;
++
++    if (pu.cs->sps->getCclmCollocatedChromaFlag())
++    {
++      pDst[0] = (piSrc[1 - strOffset] * c0_5tap
++        + piSrc[1] * c1_5tap + piSrc[0] * c2_5tap + piSrc[2] * c3_5tap
++        + piSrc[1 + strOffset] * c4_5tap
++        + offset_5tap) >> shift_5tap;
++    }
++    else 
++    {
++      pDst[0] = ((piSrc[1] * c0_6tap + piSrc[0] * c1_6tap + piSrc[2] * c2_6tap)
++        + (piSrc[1 + strOffset] * c3_6tap + piSrc[strOffset] * c4_6tap + piSrc[2 + strOffset] * c5_6tap)
++        + offset_6tap) >> shift_6tap;
++    }
++  }
++#endif
+   // inner part from reconstructed picture buffer
+   for( int j = 0; j < uiCHeight; j++ )
+   {
+@@ -1969,6 +2016,75 @@ void IntraPrediction::predIntraMip( const ComponentID compId, PelBuf &piPred, co
+   }
+ #endif
+ }
++
++
++#if NN_CHROMA_PRED
++void IntraPrediction::initNNIntraChroma(const PredictionUnit &pu, const CompArea& area)
++{
++  Pel *ptrSrcCb = getPredictorPtr(COMPONENT_Cb);
++  Pel *ptrSrcCr = getPredictorPtr(COMPONENT_Cr);
++
++  const int srcStride = 2 * MAX_CU_SIZE + 1;
++  
++  // Compute availability
++  const CodingUnit &cu = *(pu.cu);
++  const Position posLT = area;
++
++  int leftUnits = 2 * area.height;
++  int aboveUnits = 2 * area.width;
++  int totalUnits = leftUnits + aboveUnits;
++
++  bool neighborFlags[4 * MAX_NUM_PART_IDXS_IN_CTU_WIDTH + 1];
++  memset(neighborFlags, 0, totalUnits);
++
++  int availableAbove =
++    isAboveAvailable(cu, CHANNEL_TYPE_CHROMA, posLT, aboveUnits, 1,
++    (neighborFlags + leftUnits + 1));
++
++  int availableLeft =
++    isLeftAvailable(cu, CHANNEL_TYPE_CHROMA, posLT, leftUnits, 1,
++    (neighborFlags + leftUnits - 1));
++
++  const int availableRefs[2] = {availableAbove, availableLeft};
++
++  PelBuf pColY = PelBuf(m_pMdlmTemp + srcStride + 1, srcStride, Size(area));
++
++  m_NNIntraChromaPred.prepareInputForPred(ptrSrcCb, ptrSrcCr, pColY,
++    area, m_refBufferStride, availableRefs, pu.cu->slice->getSPS()->getBitDepth(CHANNEL_TYPE_LUMA));
++}
++
++
++void IntraPrediction::predIntraNN(PelBuf &piPredCb, PelBuf &piPredCr, const PredictionUnit &pu, ComponentID compID, const ClpRng& clpRng)
++{
++  static_vector<int16_t, MIP_MAX_WIDTH * MIP_MAX_HEIGHT> predNNCb(piPredCb.width * piPredCb.height);
++  static_vector<int16_t, MIP_MAX_WIDTH * MIP_MAX_HEIGHT> predNNCr(piPredCb.width * piPredCb.height);
++  m_NNIntraChromaPred.predBlock(predNNCb.data(), predNNCr.data(), pu.cu->slice->getSPS()->getBitDepth(CHANNEL_TYPE_LUMA));
++  
++  // Update both components if compID == COMPONENT_Y (default case)
++
++  if (compID != COMPONENT_Cr)
++  {
++    for (int y = 0; y < piPredCb.height; y++)
++    {
++      for (int x = 0; x < piPredCb.width; x++)
++      {
++        piPredCb.at(x, y) = ClipPel(Pel(predNNCb[y * piPredCb.width + x]), clpRng);
++      }
++    }
++  }
++  if (compID != COMPONENT_Cb)
++  {
++    for (int y = 0; y < piPredCr.height; y++)
++    {
++      for (int x = 0; x < piPredCr.width; x++)
++      {
++        piPredCr.at(x, y) = ClipPel(Pel(predNNCr[y * piPredCr.width + x]), clpRng);
++      }
++    }
++  }
++}
++#endif
++
+ #if !JVET_P0077_LINE_CG_PALETTE
+ bool IntraPrediction::calCopyRun(CodingStructure &cs, Partitioner& partitioner, uint32_t startPos, uint32_t total, uint32_t &run, ComponentID compBegin)
+ {
+diff --git a/source/Lib/CommonLib/IntraPrediction.h b/source/Lib/CommonLib/IntraPrediction.h
+index d96b8f0..7f7e69d 100644
+--- a/source/Lib/CommonLib/IntraPrediction.h
++++ b/source/Lib/CommonLib/IntraPrediction.h
+@@ -45,6 +45,7 @@
+ #include "Picture.h"
+ 
+ #include "MatrixIntraPrediction.h"
++#include "NNIntraChromaPrediction.h"
+ 
+ //! \ingroup CommonLib
+ //! \{
+@@ -109,6 +110,9 @@ private:
+   MatrixIntraPrediction m_matrixIntraPred;
+ 
+ 
++#if NN_CHROMA_PRED
++  NNIntraChromaPrediction m_NNIntraChromaPred;
++#endif
+ 
+ protected:
+   ChromaFormat  m_currChromaFormat;
+@@ -187,6 +191,12 @@ public:
+   bool calCopyRun                 (CodingStructure &cs, Partitioner& partitioner, uint32_t startPos, uint32_t total, uint32_t &run, ComponentID compBegin);
+   bool calIndexRun                (CodingStructure &cs, Partitioner& partitioner, uint32_t startPos, uint32_t total, uint32_t &run, ComponentID compBegin);
+ #endif
++
++  // NN Intra Chroma Prediction
++#if NN_CHROMA_PRED
++  void initNNIntraChroma(const PredictionUnit &pu, const CompArea& area);
++  void predIntraNN(PelBuf &piPredCb, PelBuf &piPredCr, const PredictionUnit &pu, ComponentID compID, const ClpRng& clpRng);
++#endif
+ };
+ 
+ //! \}
+diff --git a/source/Lib/CommonLib/NNIntraChromaPrediction.cpp b/source/Lib/CommonLib/NNIntraChromaPrediction.cpp
+new file mode 100644
+index 0000000..bcf7afe
+--- /dev/null
++++ b/source/Lib/CommonLib/NNIntraChromaPrediction.cpp
+@@ -0,0 +1,439 @@
++/*
++* Copyright 2021 BBC Research & Development
++*
++* Licensed under the Apache License, Version 2.0 (the "License");
++* you may not use this file except in compliance with the License.
++* You may obtain a copy of the License at
++*
++*     http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*
++* ==============================================================================
++*/
++
++/** \file     NNIntraChromaPrediction.cpp
++\brief    NN-based intra chroma prediction class
++*/
++
++#include "NNIntraChromaPrediction.h"
++#include "dtrace_next.h"
++
++#include "UnitTools.h"
++
++NNIntraChromaPrediction::NNIntraChromaPrediction() :
++
++  m_refSamplesY(NN_MAX_BOUNDARY_SIZE),
++  m_refSamplesCb(NN_MAX_BOUNDARY_SIZE),
++  m_refSamplesCr(NN_MAX_BOUNDARY_SIZE),
++  m_collocatedSamplesY(NN_MAX_OUTPUT_SAMPLES),
++
++  m_boundary1Pred(NN_MAX_BOUNDARY_SIZE * NN_MAX_CHANNEL_SIZE),
++  m_padCollocatedSamplesY(NN_MAX_OUTPUT_SAMPLES),
++  m_inputPatchesY(NN_MAX_OUTPUT_SAMPLES * NN_MAX_CHANNEL_SIZE),
++  m_padAttPred(NN_MAX_OUTPUT_SAMPLES * NN_MAX_CHANNEL_SIZE),
++
++  m_attbPred(NN_MAX_BOUNDARY_SIZE * NN_MAX_CHANNEL_SIZE),
++  m_attxPred(NN_MAX_BOUNDARY_SIZE * NN_MAX_CHANNEL_SIZE),
++  m_attx1Pred(NN_MAX_BOUNDARY_SIZE * NN_MAX_CHANNEL_SIZE),
++  m_attSoftmax(NN_MAX_OUTPUT_SAMPLES),
++  m_preAttMap(NN_MAX_BOUNDARY_SIZE * NN_MAX_OUTPUT_SAMPLES),
++  m_attMap(NN_MAX_BOUNDARY_SIZE * NN_MAX_OUTPUT_SAMPLES),
++
++  m_bound1Size(0, 0),
++  m_bound2Size(0, 0),
++  m_lumaSize(0, 0),
++  m_attbSize(0, 0),
++  m_attxSize(0, 0),
++  m_attx1Size(0, 0),
++  m_attMapSize(0, 0)
++{
++}
++
++void NNIntraChromaPrediction::prepareInputForPred(Pel* pSrcCb, Pel* pSrcCr, PelBuf pColY, const Area& block, uint32_t* stride, const int* availableRefs, const int bitDepth)
++{
++  initPredBlockParams(block);
++
++  double norm = (double)(1 << bitDepth) - 1;
++  double valueDC = (double)(1 << (bitDepth - 1)) / norm;
++  int availableUnits;
++
++  uint32_t dstStride = 2 * block.height;
++  uint32_t chromaStride = stride[COMPONENT_Cb];
++  uint32_t lumaStride = 2 * MAX_CU_SIZE + 1;
++
++  Pel *srcCb, *srcCr, *srcY, *refY;
++
++  refY = pColY.bufAt(0, 0);
++  srcCb = pSrcCb + 1;
++  srcCr = pSrcCr + 1;
++
++  m_refSamplesCb.resize((2 * block.width) + (2 * block.height) + 1);
++  m_refSamplesCr.resize((2 * block.width) + (2 * block.height) + 1);
++  m_refSamplesY.resize((2 * block.width) + (2 * block.height) + 1);
++  m_collocatedSamplesY.resize(block.width * block.height);
++
++  srcY = refY - lumaStride;
++  availableUnits = availableRefs[0];
++  for (int x = 0; x < availableUnits; x++)
++  {
++    m_refSamplesCb[dstStride + 1 + x] = double(srcCb[x]) / norm;
++    m_refSamplesCr[dstStride + 1 + x] = double(srcCr[x]) / norm;
++    m_refSamplesY[dstStride + 1 + x] = double(srcY[x]) / norm;
++  }
++  for (int x = availableUnits; x < 2 * block.width; x++)
++  {
++    m_refSamplesCb[dstStride + 1 + x] = valueDC;
++    m_refSamplesCr[dstStride + 1 + x] = valueDC;
++    m_refSamplesY[dstStride + 1 + x] = valueDC;
++  }
++  srcY = refY - 1;
++  availableUnits = availableRefs[1];
++  for (int y = 0; y < availableUnits; y++)
++  {
++    m_refSamplesCb[dstStride - 1 - y] = double(srcCb[chromaStride + y]) / norm;
++    m_refSamplesCr[dstStride - 1 - y] = double(srcCr[chromaStride + y]) / norm;
++    m_refSamplesY[dstStride - 1 - y] = double(srcY[lumaStride * y]) / norm;
++  }
++  for (int y = availableUnits; y < 2 * block.height; y++)
++  {
++    m_refSamplesCb[dstStride - 1 - y] = valueDC;
++    m_refSamplesCr[dstStride - 1 - y] = valueDC;
++    m_refSamplesY[dstStride - 1 - y] = valueDC;
++  }
++  if (availableRefs[0] > 0 && availableRefs[1] > 0)
++  {
++    m_refSamplesCb[dstStride] = pSrcCb[0] / norm;
++    m_refSamplesCr[dstStride] = pSrcCr[0] / norm;
++    m_refSamplesY[dstStride] = srcY[0] / norm;
++  }
++  else
++  {
++    m_refSamplesCb[dstStride] = valueDC;
++    m_refSamplesCr[dstStride] = valueDC;
++    m_refSamplesY[dstStride] = valueDC;
++  }
++  for (int x = 0; x < block.width; x++)
++  {
++    for (int y = 0; y < block.height; y++)
++    {
++      m_collocatedSamplesY[y * block.width + x] = double(refY[y * lumaStride + x]) / norm;
++    }
++  }
++  int avtop = availableRefs[0];
++  int aleft = availableRefs[1];
++}
++
++void NNIntraChromaPrediction::matrixPred(double* input, double* output, const double*& matrix, const double*& bias, Size inputSize, Size outputSize, double alpha)
++{
++  double value;
++  for (int y = 0; y < outputSize.height; y++)
++  {
++    for (int x = 0; x < outputSize.width; x++)
++    {
++      value = bias[x];
++      for (int j = 0; j < inputSize.width; j++)
++      {
++        value += input[y * inputSize.width + j] * matrix[x * inputSize.width + j];
++      }
++      output[y * outputSize.width + x] = LRELU<double>(alpha, value);
++    }
++  }
++}
++
++void NNIntraChromaPrediction::padInput(double* const input, double* const output, Size inputSize, int units, int channels)
++{
++  // TODO: Support 3D padding with channels parameter
++
++  int pad_units = units << 1;
++  int block_stride = inputSize.width * inputSize.height;
++  int inPos, outPos;
++
++  for (int y = 0; y < inputSize.height + pad_units; y++)
++    {
++      for (int x = 0; x < inputSize.width + pad_units; x++)
++      {
++        outPos = y * (inputSize.width + pad_units) + x;
++        for (int c = 0; c < channels; c++)
++        {
++          output[outPos * channels + c] = 0;
++        }
++      }
++    }
++
++  
++  for (int j = 0; j < inputSize.height; j++)
++  {
++    for (int i = 0; i < inputSize.width; i++)
++    {
++      for (int c = 0; c < channels; c++)
++      {
++        inPos = j * inputSize.width + i;
++        outPos = (j + units) * (inputSize.width + pad_units) + (i + units);
++        output[outPos * channels + c] = input[inPos * channels + c];
++      }
++    }
++  }
++}
++
++void NNIntraChromaPrediction::getAttMap(double* const attbPred, double* const attxPred)
++{
++  m_preAttMap.resize(m_attMapSize.width * m_attMapSize.height);
++  m_attMap.resize(m_attMapSize.width * m_attMapSize.height);
++  m_attSoftmax.resize(m_attMapSize.width);
++
++  double* const preAtt = m_preAttMap.data();
++  double* const attMap = m_attMap.data();
++  double* const attSoftmax = m_attSoftmax.data();
++  int baseStride = m_attxSize.width;
++  int outStride = m_attMapSize.width;
++
++  double softTemp = 0.5;
++
++  double value;
++  for (int y = 0; y < m_attMapSize.height; y++)
++  {
++    for (int x = 0; x < m_attMapSize.width; x++)
++    {
++      value = 0;
++      for (int i = 0; i < baseStride; i++)
++      {
++        value += attxPred[y * baseStride + i] * attbPred[x * baseStride + i];
++      }
++      preAtt[y * outStride + x] = value;
++    }
++  }
++  // Apply softmax operation
++  double softBase, colsMax;
++  for (int y = 0; y < m_attMapSize.height; y++)
++  {
++    for (int x = 0; x < m_attMapSize.width; x++)
++    {
++      attSoftmax[x] = preAtt[y * m_attMapSize.width + x] / softTemp;
++    }
++    softBase = 0;
++    colsMax = *std::max_element(std::begin(m_attSoftmax), std::end(m_attSoftmax));
++    for (int x = 0; x < m_attMapSize.width; x++)
++    {
++      softBase += exp(attSoftmax[x] - colsMax);
++    }
++    for (int x = 0; x < m_attMapSize.width; x++)
++    {
++      attMap[y * m_attMapSize.width + x] = exp(attSoftmax[x] - colsMax) / softBase;
++    }
++  }
++}
++
++void NNIntraChromaPrediction::applyBoundaryBranch(double* boundaryEnc, double* boundaryPred)
++{
++  double* const refY = m_refSamplesY.data();
++  double* const refCb = m_refSamplesCb.data();
++  double* const refCr = m_refSamplesCr.data();
++
++  const double *matrix, *bias;
++  matrix = &w_boundary1[0][0];
++  bias = &b_boundary1[0];
++
++  double value;
++  for (int y = 0; y < m_bound1Size.height; y++)
++  {
++    for (int x = 0; x < m_bound1Size.width; x++)
++    {
++      value = bias[x];
++      value += (refY[y]  * matrix[x * 3 + 0]);
++      value += (refCb[y] * matrix[x * 3 + 1]);
++      value += (refCr[y] * matrix[x * 3 + 2]);
++      boundaryEnc[y * m_bound1Size.width + x] = LRELU<double>(0.2, value);
++    }
++  }
++
++  matrix = &w_boundary2[0][0];
++  bias = &b_boundary2[0];
++
++  matrixPred(boundaryEnc, boundaryPred, matrix, bias, m_bound1Size, m_bound2Size, 0.2);
++}
++
++void NNIntraChromaPrediction::applyLumaBranch(double* lumaPred)
++{
++  m_padCollocatedSamplesY.resize((m_blockSize.width + 4) * (m_blockSize.height + 4));
++  double* const refY = m_collocatedSamplesY.data();
++  double* const refYpad = m_padCollocatedSamplesY.data();
++
++  padInput(refY, refYpad, m_blockSize, 2, 1);
++
++  const double *matrix, *bias;
++  matrix = &w_luma[0][0];
++  bias = &b_luma[0];
++
++  int fRows = 5;
++  int fCols = 5;
++  int numPatches = fRows * fCols;
++  int matrixStride = numPatches + 1;
++  int idx, pos, pos_aux, patchPos, px, py;
++  double value;
++
++  for (int y = 0; y < m_blockSize.height; y++)
++  {
++    for (int x = 0; x < m_blockSize.width; x++)
++    {
++      pos = (y * m_blockSize.width) + x;
++      pos_aux = pos + (4 * (pos / m_blockSize.height));
++
++      for (int c = 0; c < m_lumaSize.width; c++)
++      {
++        value = bias[c];
++        for (int rows = 0; rows < fRows; rows++)
++        {
++          for (int cols = 0; cols < fCols; cols++)
++          {
++            idx = (cols + ((m_blockSize.height + 4) * rows)) + pos_aux;
++            px = idx / (m_blockSize.width + 4);
++            py = idx % (m_blockSize.width + 4);
++            patchPos = fCols * rows + cols;
++            value += refYpad[(m_blockSize.width + 4) * px + py] * matrix[c * matrixStride + patchPos];
++          }
++        }
++        value += matrix[c * matrixStride + (matrixStride - 1)];
++        lumaPred[pos * m_lumaSize.width + c] = Clip3<double>(0, 100, value);
++      }
++    }
++  }
++}
++
++void NNIntraChromaPrediction::applyAttentionBranch(double* attPred, double* boundaryEnc, double* boundaryPred, double* lumaPred)
++{
++  static_vector<double, NN_MAX_OUTPUT_SAMPLES * NN_MAX_BOUNDARY_SIZE> attbTransposed(m_bound2Size.width * m_bound2Size.height);
++
++  const double *matrix, *bias;
++
++  m_attbPred.resize(m_attbSize.width * m_attbSize.height);
++  double* const attbPred = m_attbPred.data();
++  matrix = &w_att_b[0][0];
++  bias = &b_att_b[0];
++  matrixPred(boundaryEnc, attbPred, matrix, bias, m_bound1Size, m_attbSize, 0);
++
++  m_attxPred.resize(m_attxSize.width * m_attxSize.height);
++  double* const attxPred = m_attxPred.data();
++  matrix = &w_att_x[0][0];
++  bias = &b_att_x[0];
++  matrixPred(lumaPred, attxPred, matrix, bias, m_lumaSize, m_attxSize, 0);
++
++  m_attx1Pred.resize(m_attx1Size.width * m_attx1Size.height);
++  double* const attx1Pred = m_attx1Pred.data();
++  matrix = &w_att_x1[0][0];
++  bias = &b_att_x1[0];
++  matrixPred(lumaPred, attx1Pred, matrix, bias, m_lumaSize, m_attx1Size, 0);
++
++  getAttMap(attbPred, attxPred);
++
++  double* const attMap = m_attMap.data();
++  double* const attbT = attbTransposed.data();
++
++  for (int y = 0; y < m_bound2Size.width; y++)
++  {
++    for (int x = 0; x < m_bound2Size.height; x++)
++    {
++      attbT[y * m_bound2Size.height + x] = boundaryPred[x * m_bound2Size.width + y];
++    }
++  }
++  int pos;
++  double value;
++  for (int y = 0; y < m_attMapSize.height; y++)
++  {
++    for (int x = 0; x < m_bound2Size.width; x++)
++    {
++      value = 0;
++      pos = y * m_bound2Size.width + x;
++      for (int i = 0; i < m_attMapSize.width; i++)
++      {
++        value += attMap[y * m_attMapSize.width + i] * attbT[x * m_bound2Size.height + i];
++      }
++      attPred[pos] = value * attx1Pred[pos];
++    }
++  }
++}
++
++void NNIntraChromaPrediction::applyTrunkBranch(Pel* cbPred, Pel* crPred, double* attPred, const int bitDepth)
++{
++  m_padAttPred.resize((m_blockSize.width + 2) * (m_blockSize.height + 2) * m_bound2Size.width);
++  double* const attPad = m_padAttPred.data();
++
++  int padUnits = 1;
++  int padChannels = m_bound2Size.width;
++  padInput(attPred, attPad, m_blockSize, padUnits, padChannels);
++
++  const double *matrix, *bias;
++  matrix = &w_out[0][0];
++  bias = &b_out[0];
++
++  double norm = (1 << bitDepth) - 1;
++
++  int fRows = 3;
++  int fCols = 3;
++  int numPatches = fRows * fCols;
++  int matrixStride = (numPatches * padChannels) + 1;
++  int idx, pos, pos_aux, patchPos, chPos, p;
++  double value_cb, value_cr;
++
++  for (int y = 0; y < m_blockSize.height; y++)
++  {
++    for (int x = 0; x < m_blockSize.width; x++)
++    {
++      value_cb = bias[0];
++      value_cr = bias[1];
++      pos = (y * m_blockSize.width) + x;
++      pos_aux = pos + (2 * (pos / m_blockSize.height));
++      for (int ch = 0; ch < padChannels; ch++)
++      {
++        for (int rows = 0; rows < fRows; rows++)
++        {
++          for (int cols = 0; cols < fCols; cols++)
++          {
++            p = (fCols * rows) + cols;
++            idx = (cols + ((m_blockSize.height + 2) * rows)) + pos_aux;
++            chPos = idx * padChannels + ch;
++            patchPos = numPatches * ch + p;
++            value_cb += attPad[chPos] * matrix[patchPos];
++            value_cr += attPad[chPos] * matrix[patchPos + matrixStride];
++          }
++        }
++      }
++      value_cb += matrix[matrixStride - 1];
++      value_cr += matrix[(matrixStride << 1) - 1];
++      cbPred[pos] = (Pel)(value_cb * norm);
++      crPred[pos] = (Pel)(value_cr * norm);
++    }
++  }
++}
++
++void NNIntraChromaPrediction::predBlock(Pel* predCb, Pel* predCr, const int bitDepth)
++{
++  static_vector<double, NN_MAX_BOUNDARY_SIZE * NN_MAX_CHANNEL_SIZE> boundaryEnc(m_bound1Size.height * m_bound1Size.width);
++  static_vector<double, NN_MAX_BOUNDARY_SIZE * NN_MAX_CHANNEL_SIZE> boundaryPred(m_bound2Size.height * m_bound2Size.width);
++  static_vector<double, NN_MAX_OUTPUT_SAMPLES * NN_MAX_CHANNEL_SIZE> lumaPred(m_lumaSize.height * m_lumaSize.width);
++  static_vector<double, NN_MAX_OUTPUT_SAMPLES * NN_MAX_CHANNEL_SIZE> attPred(m_attMapSize.height * m_bound2Size.width);
++
++  applyBoundaryBranch(boundaryEnc.data(), boundaryPred.data());
++  applyLumaBranch(lumaPred.data());
++  applyAttentionBranch(attPred.data(), boundaryEnc.data(), boundaryPred.data(), lumaPred.data());
++  applyTrunkBranch(predCb, predCr, attPred.data(), bitDepth);
++}
++
++void NNIntraChromaPrediction::initPredBlockParams(const Size& block)
++{
++  m_blockSize = block;
++  int boundarySize = (2 * block.width) + (2 * block.height) + 1;
++  int blockSize = block.width * block.height;
++
++  m_bound1Size = Size(32, boundarySize);
++  m_bound2Size = Size(3, boundarySize);
++  m_lumaSize = Size(64, blockSize);
++  m_attbSize = Size(16, boundarySize);
++  m_attxSize = Size(16, blockSize);
++  m_attx1Size = Size(3, blockSize);
++  m_attMapSize = Size(boundarySize, blockSize);
++}
+diff --git a/source/Lib/CommonLib/NNIntraChromaPrediction.h b/source/Lib/CommonLib/NNIntraChromaPrediction.h
+new file mode 100644
+index 0000000..ac15c47
+--- /dev/null
++++ b/source/Lib/CommonLib/NNIntraChromaPrediction.h
+@@ -0,0 +1,270 @@
++﻿/*
++* Copyright 2021 BBC Research & Development
++*
++* Licensed under the Apache License, Version 2.0 (the "License");
++* you may not use this file except in compliance with the License.
++* You may obtain a copy of the License at
++*
++*     http://www.apache.org/licenses/LICENSE-2.0
++*
++* Unless required by applicable law or agreed to in writing, software
++* distributed under the License is distributed on an "AS IS" BASIS,
++* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++* See the License for the specific language governing permissions and
++* limitations under the License.
++*
++* ==============================================================================
++*/
++
++/** \file     NNIntraChromaPrediction.h
++\brief    NN-based intra chroma prediction class (header)
++*/
++
++#ifndef __NNINTRACHROMAPREDICTION__
++#define __NNINTRACHROMAPREDICTION__
++
++#include "Unit.h"
++
++static const int NN_MAX_BOUNDARY_SIZE = 65;
++static const int NN_MAX_OUTPUT_SAMPLES = 400;
++static const int NN_MAX_CHANNEL_SIZE = 96;
++
++
++class NNIntraChromaPrediction
++{
++public:
++  NNIntraChromaPrediction();
++
++  void prepareInputForPred(Pel* pSrcCb, Pel* pSrcCr, PelBuf pColY, const Area& block, uint32_t* stride, const int* availableRefs, const int bitDepth);
++  void matrixPred(double* input, double* output, const double*& matrix, const double*& bias, Size inputSize, Size outputSize, double alpha);
++  void padInput(double* const input, double* const output, Size inputSize, int units, int channels);
++  void getAttMap(double* const attbPred, double* const attxPred);
++  void applyBoundaryBranch(double* boundaryEnc, double* boundaryPred);
++  void applyLumaBranch(double* lumaPred);
++  void applyAttentionBranch(double* attPred, double* boundaryEnc, double* boundaryPred, double* lumaPred);
++  void applyTrunkBranch(Pel* cbPred, Pel* crPred, double* attPred, const int bitDepth);
++  void predBlock(Pel* predCb, Pel* predCr, const int bitDepth);
++
++  double w_luma[64][26] =
++  {
++    {0.534536719322204590,	-0.232515057548880577,	-1.340323537588119507,	-0.314987361431121826,	0.509219527244567871,	0.033926889300346375,	-0.825358986854553223,	1.892033644020557404,	-0.851449903100728989,	-0.229093089699745178,	-0.605403918772935867,	2.836221996694803238,	15.874944686889648438,	3.070732831954956055,	0.007467092014849186,	-0.496410030871629715,	-1.012287691235542297,	1.255691487342119217,	-1.406618937849998474,	0.044477954506874084,	0.410020649433135986,	-0.061025708913803101,	-0.173749467357993126,	0.332697736099362373,	0.701062738895416260,	0.30964890122413635},
++    {-0.261466920375823975,	-0.180921897292137146,	0.192018274217844009,	-0.325769867748022079,	-0.201786532998085022,	0.155164279043674469,	0.039029404520988464,	-0.025333937257528305,	-0.173363599926233292,	-0.414542898535728455,	0.644377760589122772,	0.743550591170787811,	3.785449057817459106,	1.192475043237209320,	0.823611065745353699,	-0.297898724675178528,	-0.186414318159222603,	0.702368021011352539,	0.148744942620396614,	0.192151647061109543,	0.030364930629730225,	0.138026956468820572,	0.615452393889427185,	0.122379165142774582,	-0.055583704262971878,	19.51432228088378906},
++    {0.981263995170593262,	-0.065454259514808655,	0.096720881760120392,	-0.363210588693618774,	1.052625417709350586,	0.005852624773979187,	-2.711473047733306885,	3.670404314994812012,	-3.187753945589065552,	-0.086449429392814636,	-0.212714508175849915,	2.398631386458873749,	22.038713455200195312,	1.625470629136543721,	0.264184236526489258,	-0.251732014119625092,	-2.720536172389984131,	3.313667863607406616,	-3.340369820594787598,	-0.041698507964611053,	1.068979740142822266,	-0.354056209325790405,	-0.165740133379586041,	-0.052570112049579620,	0.763236761093139648,	-6.79844379425048828},
++    {1.088681817054748535,	0.250345468521118164,	-1.492212787270545959,	0.115665256977081299,	0.929584383964538574,	0.040390849113464355,	0.097820863127708435,	4.903470218181610107,	-0.089671246707439423,	-0.282653473317623138,	-1.774277985095977783,	4.609064012765884399,	23.457321166992187500,	3.535250127315521240,	-1.542636543512344360,	-0.121420547366142273,	0.049032419919967651,	3.453522503376007080,	-0.758064493536949158,	-0.059966892004013062,	0.895023167133331299,	-0.524234682321548462,	-2.190201640129089355,	0.028841577470302582,	0.958772480487823486,	0.62102282047271728},
++    {0.384955078363418579,	0.977852344512939453,	0.681278843432664871,	0.175380140542984009,	0.192235186696052551,	0.871556699275970459,	1.548031851649284363,	2.887970894575119019,	0.670819133520126343,	0.084013883024454117,	0.783343069255352020,	2.884909093379974365,	8.969769001007080078,	1.441750414669513702,	-0.406348615884780884,	-0.172228828072547913,	0.054122567176818848,	0.717302136210491881,	-0.502533353865146637,	-0.195083372294902802,	-0.065568372607231140,	-0.407303825020790100,	-1.078420326113700867,	-0.496538713574409485,	-0.101758688688278198,	19.92370986938476562},
++    {0.707379639148712158,	-0.589365310966968536,	-2.080723226070404053,	0.189562916755676270,	0.297522187232971191,	0.287235144525766373,	-2.251543700695037842,	-0.109108239412307739,	-0.261726361699402332,	-0.741312623023986816,	0.831533752381801605,	5.157353013753890991,	18.385952830314636230,	6.693574309349060059,	-0.128173962235450745,	-0.973110437393188477,	-3.551023483276367188,	-3.269311875104904175,	-3.570461988449096680,	-0.188324086833745241,	1.169716715812683105,	0.259952574968338013,	-0.829246222972869873,	0.587292701005935669,	1.081339120864868164,	-3.65424823760986328},
++    {0.061004754155874252,	-0.105505332350730896,	0.094123285263776779,	-0.054708160459995270,	-0.123405553400516510,	0.040995232760906219,	-0.300789182074368000,	-0.221323816105723381,	-0.038294167257845402,	-0.094889648258686066,	0.022740174084901810,	-0.044822409749031067,	-0.289947119774296880,	-0.471135374158620834,	-0.027020148932933807,	-0.154174137860536575,	-0.226156536489725113,	0.087623499333858490,	0.078820941969752312,	0.016156777739524841,	0.135710731148719788,	0.048005753254983574,	0.030573565512895584,	0.071700839675031602,	0.045096509158611298,	-0.46971878409385681},
++    {0.052888475358486176,	-1.156883388757705688,	-1.878668576478958130,	-1.087076954543590546,	0.578166842460632324,	-0.895067438483238220,	-2.787924259901046753,	3.002491265535354614,	-2.165629327297210693,	-0.624384149909019470,	-2.441055476665496826,	1.479270428419113159,	19.876024484634399414,	2.351859591901302338,	-1.271602541208267212,	-1.092289358377456665,	-1.479869738221168518,	4.614465534687042236,	-0.894887110218405724,	-0.071141324937343597,	0.386341333389282227,	-0.818227984011173248,	-0.840189049020409584,	-0.098835811018943787,	0.407110810279846191,	-3.87676811218261718},
++    {-0.162684038281440735,	-0.915966004133224487,	1.003726175054907799,	-1.019571810960769653,	0.347533613443374634,	-0.834605425596237183,	-5.575351834297180176,	-3.754948258399963379,	-5.114755511283874512,	-0.678047917783260345,	0.947130322456359863,	-3.775769919157028198,	10.740015387535095215,	-3.729261398315429688,	1.121400222182273865,	-1.119590908288955688,	-5.151202738285064697,	-3.448359429836273193,	-5.154047966003417969,	-0.851511955261230469,	0.485524475574493408,	-0.536956578493118286,	0.884403273463249207,	-0.581803560256958008,	0.312836289405822754,	3.28915333747863769},
++    {-0.177455887198448181,	0.336914207786321640,	0.450903277727775276,	0.162848711013793945,	-0.501331686973571777,	0.425740644335746765,	0.676733393222093582,	-1.706980213522911072,	0.288459204137325287,	-0.356164909899234772,	0.537057034671306610,	-1.663137018680572510,	-9.689338028430938721,	-1.066546317189931870,	0.126361533999443054,	0.005504138767719269,	-0.259317569434642792,	-3.660942167043685913,	-0.679667897522449493,	-0.042606579139828682,	-0.494860440492630005,	0.319222986698150635,	0.148719511926174164,	0.242728680372238159,	-0.053455471992492676,	20.57795333862304687},
++    {0.061910945922136307,	0.343376219272613525,	1.404556900262832642,	0.994155853986740112,	0.687074422836303711,	0.268030971288681030,	-4.220419764518737793,	-6.019034147262573242,	-2.667317420244216919,	0.532686859369277954,	0.308886609971523285,	-7.329458475112915039,	-6.187291026115417480,	-4.746496617794036865,	1.343839421868324280,	0.177604645490646362,	-3.718622684478759766,	-6.656681478023529053,	-3.746363162994384766,	0.089245006442070007,	0.479934573173522949,	0.383095473051071167,	0.414154738187789917,	0.239426463842391968,	0.447490900754928589,	11.28999710083007812},
++    {-0.870476722717285156,	0.015740275382995605,	0.752359092235565186,	0.364960581064224243,	-0.891762018203735352,	0.140967220067977905,	2.177956342697143555,	-1.255631253123283386,	1.914984002709388733,	-0.000426173210144043,	0.100458033382892609,	-1.787377234548330307,	-17.930526494979858398,	-1.291954599320888519,	0.148920137435197830,	0.219242855906486511,	2.034322232007980347,	-1.280458372086286545,	2.053088635206222534,	-0.028933301568031311,	-0.951024293899536133,	0.379546165466308594,	0.323922283947467804,	-0.144448876380920410,	-0.684335291385650635,	11.04906082153320312},
++    {0.128099888563156128,	-0.200318038463592529,	-0.712635193020105362,	-0.426600590348243713,	0.283831119537353516,	-0.243298366665840149,	-0.021572075784206390,	2.999084934592247009,	-0.602045118808746338,	-0.587705239653587341,	-1.501903742551803589,	3.039346247911453247,	13.823404431343078613,	2.642747163772583008,	-0.917738199234008789,	-0.048685945570468903,	1.219411879777908325,	4.717076241970062256,	0.479683569166809320,	-0.035800691694021225,	0.021802289411425591,	-0.583579316735267639,	-1.392625942826271057,	-0.471248611807823181,	-0.022726120427250862,	-3.17026138305664062},
++    {-0.423833072185516357,	0.176810964941978455,	0.804918527603149414,	0.148805133998394012,	-0.759456217288970947,	0.636671572923660278,	1.478297229856252670,	-0.586382848909124732,	1.146959662437438965,	0.171373248100280762,	1.135304734110832214,	-0.002046428620815277,	-8.134000778198242188,	-0.014783918857574463,	1.174692422151565552,	0.173781961202621460,	1.000571519136428833,	-1.327485416084527969,	0.173443332314491272,	-0.303073786199092865,	-1.013001799583435059,	-0.110185086727142334,	0.275158226490020752,	-0.202647557482123375,	-0.642650961875915527,	48.49974060058593750},
++    {0.361970931291580200,	-0.068365678191184998,	-0.292208626866340637,	-0.173399396240711212,	0.134618788957595825,	0.002531170845031738,	-0.131653819233179092,	1.796007812023162842,	-0.096419273875653744,	-0.163790427148342133,	-0.347905933856964111,	2.123445227742195129,	10.215036571025848389,	1.605867303907871246,	-0.458215708844363689,	-0.113507077097892761,	-0.359360210597515106,	1.220461487770080566,	-0.301236659288406372,	-0.069336891174316406,	0.324894666671752930,	-0.040942922234535217,	-0.679715894162654877,	0.036866866052150726,	0.391386926174163818,	1.47990548610687255},
++    {-0.356256157159805298,	-0.154728621244430542,	0.660710662603378296,	-0.228576275054365396,	-0.310707926750183105,	-0.243326064199209213,	-0.221749935299158096,	-0.910448331385850906,	-0.301173156127333641,	-0.351549960672855377,	0.971322402358055115,	-0.486521029844880104,	-3.347216948866844177,	-0.257942417636513710,	0.857703834772109985,	-0.219620343879796565,	-0.123166337609291077,	-0.836294978857040405,	0.140601150691509247,	-0.217257197946310043,	-0.504339039325714111,	0.001635074615478516,	0.568415552377700806,	-0.178219914436340332,	-0.317075073719024658,	17.93517112731933593},
++    {-0.530192434787750244,	0.167546160519123077,	1.348037302494049072,	0.243351206183433533,	-0.401400476694107056,	0.101938664913177490,	0.920914031565189362,	-0.201585395261645317,	0.437287444248795509,	0.114630654454231262,	1.287967227399349213,	-0.075362496078014374,	-5.478150332346558571,	0.314033523201942444,	1.589818149805068970,	0.334836423397064209,	0.840583592653274536,	-0.077883533202111721,	0.878958970308303833,	0.295756578445434570,	-0.743350028991699219,	-0.050651699304580688,	1.250463687814772129,	0.267777144908905029,	-0.276102870702743530,	45.76651000976562500},
++    {-0.186806470155715942,	0.014941011555492878,	0.576497459784150124,	-0.041268825531005859,	-0.037724200636148453,	-0.177255567163228989,	-0.150582857429981232,	0.929532831534743309,	-0.297665577381849289,	-0.299955911934375763,	0.009950019419193268,	1.382766500115394592,	6.181715339422225952,	1.322567485272884369,	0.604282617568969727,	-0.423051424324512482,	-0.714904658496379852,	0.541391843929886818,	-0.622999131679534912,	-0.240909636020660400,	-0.023405987769365311,	-0.169746965169906616,	0.221949320053681731,	-0.160422101616859436,	0.162906035780906677,	8.39126586914062500},
++    {-0.177913188934326172,	-0.840868949890136719,	-1.228160947561264038,	-1.075187519192695618,	-0.033871576189994812,	-0.478295177221298218,	-1.221232786774635315,	2.088071368634700775,	-0.713734397664666176,	-0.547086358070373535,	-0.261854410171508789,	2.641120956744998693,	14.382858991622924805,	2.843799777328968048,	-0.465769007802009583,	-0.388417124748229980,	-0.022548004984855652,	3.207419544458389282,	0.046914947219192982,	-0.180826038122177124,	0.222894147038459778,	-0.011623144149780273,	0.070099636446684599,	0.191259760409593582,	0.348288983106613159,	14.48897361755371093},
++    {0.737751722335815430,	0.149105280637741089,	-1.176717907190322876,	-0.041249215602874756,	0.654260039329528809,	0.133518084883689880,	0.035455455537885427,	4.188450217247009277,	0.248586229979991913,	-0.255715101957321167,	-1.556321561336517334,	2.836089670658111572,	18.515522956848144531,	3.048079282045364380,	-1.425789996981620789,	-0.099832102656364441,	-0.202248305082321167,	2.978974133729934692,	-0.139819025993347168,	0.110321730375289917,	0.625342488288879395,	-0.466275066137313843,	-1.704697072505950928,	0.237432651221752167,	0.883663594722747803,	2.29079437255859375},
++    {0.341355413198471069,	0.526118293404579163,	0.225237935781478882,	0.742936581373214722,	-0.082429610192775726,	0.526404872536659241,	1.772497475147247314,	2.151980690658092499,	1.174821086227893829,	0.225612148642539978,	-0.286504693329334259,	2.712420165538787842,	1.034756670705974102,	2.285960733890533447,	-0.149356981739401817,	0.484962752088904381,	1.768688023090362549,	2.579172849655151367,	1.628117322921752930,	0.179876528680324554,	-0.154904156923294067,	-0.149297900497913361,	-0.395497463643550873,	0.130651472136378288,	0.098775528371334076,	20.22145080566406250},
++    {0.481761962175369263,	0.575875788927078247,	-0.466165516525506973,	0.272006660699844360,	0.298193514347076416,	0.570401638746261597,	1.621228963136672974,	2.972001343965530396,	1.147602759301662445,	0.092214277014136314,	-0.516893520951271057,	2.785365968942642212,	6.845084369182586670,	1.975159421563148499,	-0.763667345046997070,	0.404883831739425659,	1.811072364449501038,	2.492273792624473572,	0.856620308128185570,	0.246741987764835358,	0.177510306239128113,	0.114126367494463921,	-0.679689310491085052,	0.270902089774608612,	0.341767549514770508,	12.17885589599609375},
++    {-0.188170015811920166,	-0.023107863962650299,	-0.024135140702128410,	-0.075944304466247559,	-0.062019817531108856,	-0.128062624484300613,	-0.254527159035205841,	-0.112934578908607364,	0.263322301208972931,	0.033130536787211895,	0.080575769767165184,	0.039612826425582170,	-0.197567156283184886,	-0.179267462342977524,	0.103982206434011459,	0.007552627474069595,	-0.064601860940456390,	-0.027715133503079414,	0.026898835785686970,	-0.167052499949932098,	0.099061161279678345,	-0.075702991802245378,	0.037760470062494278,	0.046188374981284142,	-0.046711321920156479,	-0.42596870660781860},
++    {0.301797360181808472,	-0.661339610815048218,	-0.636231329757720232,	-0.700731843709945679,	0.588131248950958252,	-1.149001985788345337,	-1.853944405913352966,	3.545488685369491577,	-2.448051303625106812,	-0.258318457752466202,	-1.972184628248214722,	2.951274104416370392,	19.433294415473937988,	2.433328150771558285,	-0.557051785290241241,	-0.762353509664535522,	-0.414263129234313965,	5.743531703948974609,	-0.534451916813850403,	0.011021584272384644,	0.389002919197082520,	-0.767913043498992920,	-1.249867185950279236,	-0.360833317041397095,	0.194270923733711243,	-3.48935413360595703},
++    {-0.840920746326446533,	0.028021171689033508,	1.000307366251945496,	-0.137818425893783569,	-0.979404687881469727,	-0.007362842559814453,	1.184175997972488403,	-2.611861765384674072,	0.535745330154895782,	-0.166955605149269104,	1.024168401956558228,	-2.142229169607162476,	-20.116399288177490234,	-0.891934223473072052,	1.385374695062637329,	0.360359907150268555,	1.434542058035731316,	-2.543745070695877075,	1.386944577097892761,	-0.291032940149307251,	-1.051478147506713867,	0.386945605278015137,	1.014998286962509155,	-0.488275729119777679,	-0.831794977188110352,	18.13489151000976562},
++    {0.471308290958404541,	-0.003383243456482887,	-0.475104793906211853,	0.041215091943740845,	0.439523696899414062,	0.098079875111579895,	-0.171796392649412155,	2.212012268602848053,	-0.351605444215238094,	-0.345319844782352448,	-0.534061349928379059,	2.307542651891708374,	12.449429631233215332,	1.740220945328474045,	-0.519963305443525314,	-0.280983282253146172,	-0.382271893322467804,	1.765216715633869171,	-0.321299493312835693,	-0.314724780619144440,	0.395859092473983765,	-0.146555066108703613,	-0.669865809381008148,	-0.246513217687606812,	0.340809732675552368,	0.76046007871627807},
++    {0.312132865190505981,	-0.147634789347648621,	-0.572388656437397003,	-0.207032382488250732,	0.512304365634918213,	-0.306905230041593313,	-0.517913609743118286,	4.203612983226776123,	-0.429081104695796967,	-0.375790020450949669,	-0.422318905591964722,	4.570211857557296753,	21.671093463897705078,	3.987419605255126953,	-0.304729398339986801,	-0.369377672672271729,	-0.461533956928178668,	3.763509631156921387,	-0.584277428686618805,	-0.068073056638240814,	0.534386396408081055,	-0.462484061717987061,	-0.681169129908084869,	-0.074838787317276001,	0.457177639007568359,	8.10659408569335937},
++    {-0.026234783232212067,	0.063759198412299156,	0.019167554331943393,	-0.387981005012989044,	-0.460805118083953857,	0.308291817083954811,	0.538537144660949707,	0.469623945653438568,	0.200700987130403519,	-0.193171449005603790,	0.907505385577678680,	1.744808286428451538,	2.712319493293762207,	1.568981293588876724,	0.846167251467704773,	-0.167721718549728394,	0.407683302648365498,	0.856841444969177246,	0.281192298978567123,	-0.244346484541893005,	-0.112948112189769745,	0.017866984009742737,	0.747780188918113708,	-0.404153421521186829,	-0.287817269563674927,	19.20130348205566406},
++    {-0.475431531667709351,	-0.251321030780673027,	0.393813036382198334,	0.028131753206253052,	-0.868189513683319092,	0.531485434621572495,	1.555261552333831787,	-2.141800880432128906,	1.177394822239875793,	0.395398959517478943,	0.717961221933364868,	-2.163807332515716553,	-18.378045558929443359,	-1.391405409201979637,	0.935213923454284668,	0.306262582540512085,	1.400275290012359619,	-1.022718494758009911,	1.790873795747756958,	0.085782468318939209,	-0.973863840103149414,	0.495897322893142700,	1.393441438674926758,	0.058769091963768005,	-0.616214394569396973,	20.41020393371582031},
++    {-0.648581147193908691,	-0.319347150623798370,	1.011349111795425415,	-0.175554022192955017,	-0.665557920932769775,	-0.125262975692749023,	0.147076213732361794,	-1.560914896428585052,	-0.072309881448745728,	-0.088377755135297775,	0.987189919687807560,	-2.237846661359071732,	-10.350452065467834473,	-1.295315053313970566,	1.468664944171905518,	-0.024085679557174444,	0.201269410550594330,	-1.483322937041521072,	0.345782667398452759,	0.010932318866252899,	-0.975364267826080322,	0.041083484888076782,	1.315105870366096497,	-0.184262476861476898,	-0.480495780706405640,	28.38763999938964843},
++    {-0.644151568412780762,	-0.176578402519226074,	1.278065860271453857,	-0.084665447473526001,	-0.532660603523254395,	-0.071839421987533569,	-0.035663815215229988,	-1.942970395088195801,	-0.242319270968437195,	0.073216572403907776,	1.277044191956520081,	-2.011887013912200928,	-11.018906891345977783,	-1.880989268422126770,	1.484194338321685791,	-0.273154646158218384,	-0.554385802708566189,	-2.095511764287948608,	0.361096546053886414,	0.109830576926469803,	-0.851500809192657471,	-0.098276227712631226,	1.169963851571083069,	-0.456242328509688377,	-0.507635891437530518,	20.81409454345703125},
++    {-0.526921391487121582,	-0.171881634742021561,	0.823909223079681396,	-0.041545569896697998,	-0.409101456403732300,	-0.163069933652877808,	-0.098529748618602753,	-1.156771861016750336,	-0.028909511864185333,	-0.014043897390365601,	0.992293626070022583,	-1.041306854924187064,	-6.417498528957366943,	-1.018300443887710571,	1.325336635112762451,	-0.234842684119939804,	-0.194391570985317230,	-1.470069075003266335,	-0.038903696462512016,	0.047730933874845505,	-0.667405605316162109,	0.010256618261337280,	1.063099026679992676,	-0.090564742684364319,	-0.401101469993591309,	23.59746170043945312},
++    {-0.599052548408508301,	0.269686818122863770,	0.821326065808534622,	0.290657520294189453,	-0.678841292858123779,	0.413507148623466492,	1.290047187358140945,	-2.788711726665496826,	0.996047645807266235,	0.289316281676292419,	0.650027442723512650,	-2.794835940003395081,	-18.735511422157287598,	-1.843200782313942909,	0.863379448652267456,	0.381211161613464355,	1.008668599650263786,	-2.934917762875556946,	0.816984860226511955,	-0.150965116918087006,	-0.671668648719787598,	0.467056810855865479,	0.633774755522608757,	-0.048229772597551346,	-0.603854894638061523,	17.03577232360839843},
++    {-0.074834942817687988,	0.010920692235231400,	-0.120217385236173868,	-0.230101954657584429,	-0.057648800313472748,	0.051115433685481548,	-0.161921538412570953,	0.180125705315731466,	-0.059003979898989201,	0.020790701732039452,	-0.097771245986223221,	-0.128711348399519920,	-0.052678638137876987,	-0.180596221471205354,	-0.255472613149322569,	-0.043509978801012039,	-0.091029444709420204,	-0.026892926543951035,	-0.112363325431942940,	-0.106171853840351105,	-0.025616090744733810,	-0.064711554907262325,	-0.154490899294614792,	-0.127404395490884781,	-0.009327955543994904,	-0.51373624801635742},
++    {-0.052260108292102814,	-0.085302334278821945,	0.045068165287375450,	0.168413050472736359,	0.020697504281997681,	-0.060885434038937092,	-0.019924168474972248,	-0.129176460206508636,	-0.040211517829447985,	-0.152144588530063629,	0.024811279028654099,	-0.124866556376218796,	-0.088872267398983240,	-0.193463858217000961,	-0.261561544612050056,	0.034371010959148407,	0.041694357991218567,	0.029777580466543441,	-0.068789819255471230,	0.033384738489985466,	0.008641701191663742,	-0.071793208830058575,	-0.484700962901115417,	-0.127153214067220688,	0.113597027957439423,	-0.34252724051475524},
++    {0.380786776542663574,	0.485216692090034485,	-0.211950011551380157,	0.256162580102682114,	0.347962498664855957,	0.264324806164950132,	1.022169481962919235,	2.329763889312744141,	0.787442877888679504,	0.369396865367889404,	-0.575495609082281590,	1.484780259430408478,	3.900520563125610352,	1.040537219494581223,	-0.906093850731849670,	0.370432883501052856,	0.885788481682538986,	1.281840786337852478,	0.194812681525945663,	0.047023750841617584,	0.125242218375205994,	-0.283400524407625198,	-1.050841420888900757,	0.101209312677383423,	0.258972227573394775,	6.98311185836791992},
++    {0.156630173325538635,	-0.869492873549461365,	-2.056283533573150635,	-1.406859412789344788,	-0.018006924539804459,	0.230181023478507996,	0.633915115147829056,	6.293334722518920898,	0.416608870029449463,	-0.628528445959091187,	0.300268143415451050,	9.034176260232925415,	30.513418912887573242,	8.760809123516082764,	0.463873803615570068,	0.160596549510955811,	2.109566748142242432,	8.427158057689666748,	1.716248080134391785,	0.367336548864841461,	0.484163701534271240,	0.055810153484344482,	0.523478843271732330,	0.799399405717849731,	0.789088845252990723,	47.85915374755859375},
++    {-0.787374556064605713,	0.304286248981952667,	0.644004911184310913,	0.190220206975936890,	-1.014360904693603516,	0.329950645565986633,	2.128588631749153137,	-2.610639035701751709,	1.896100781857967377,	0.477174319326877594,	0.437376961112022400,	-3.187410086393356323,	-24.038074254989624023,	-2.633157342672348022,	0.716138739138841629,	0.434832468628883362,	2.077224820852279663,	-2.425191327929496765,	1.926567554473876953,	0.126686796545982361,	-1.127734303474426270,	0.401697158813476562,	0.879259569570422173,	-0.102124549448490143,	-0.872902929782867432,	20.85644531250000000},
++    {-0.563927173614501953,	-0.549900025129318237,	0.731626257300376892,	-0.384146906435489655,	-0.476096957921981812,	-0.533941298723220825,	-0.688466787338256836,	-1.119965907186269760,	-0.586265072226524353,	-0.036432620137929916,	0.942430347204208374,	-0.540279623121023178,	-3.271016240119934082,	-0.363277256488800049,	1.214364856481552124,	-0.108740620315074921,	-0.193223446607589722,	-0.375306315720081329,	0.003725115209817886,	0.000156352296471596,	-0.371279120445251465,	0.097750067710876465,	1.163327366113662720,	-0.174279302358627319,	-0.250231295824050903,	11.48855400085449218},
++    {-0.333620220422744751,	-0.457163227722048759,	-0.660121768712997437,	-0.750645518302917480,	-0.199177220463752747,	-0.449007198214530945,	-1.126931861042976379,	0.487567599862813950,	-0.621690236032009125,	-0.518561184406280518,	0.260809115134179592,	1.733516722917556763,	8.549446582794189453,	1.623254660516977310,	-0.016084328293800354,	-0.355687716975808144,	-0.025965496897697449,	2.250126764178276062,	0.268024580553174019,	-0.078559368848800659,	0.168761074542999268,	-0.202792134135961533,	0.490407392382621765,	0.124119430780410767,	0.147523015737533569,	1.86781895160675048},
++    {-0.069343619048595428,	-0.077273586764931679,	-0.033959573134779930,	-0.374428369104862213,	-0.088143609464168549,	0.268518880009651184,	0.146453663706779480,	1.386195041239261627,	0.130238004028797150,	-0.127253215294331312,	0.352714046835899353,	1.393694892525672913,	7.159959077835083008,	0.823471374809741974,	0.272595047950744629,	-0.059261918067932129,	-0.111002678051590919,	0.593221865594387054,	-0.711222849786281586,	-0.119295790791511536,	-0.046403344720602036,	-0.430816009640693665,	-0.095686789602041245,	-0.051753975450992584,	0.003832014044746757,	24.39825057983398437},
++    {0.115194469690322876,	-0.515490457415580750,	0.001696391962468624,	-0.165991306304931641,	0.734576284885406494,	-0.475663095712661743,	-5.183690786361694336,	-3.676840156316757202,	-4.463284730911254883,	-0.455268669873476028,	0.496337763965129852,	-2.961363910697400570,	12.593396902084350586,	-2.216808050870895386,	0.260454736649990082,	-0.472605109214782715,	-4.722516655921936035,	-1.859673969447612762,	-4.293426990509033203,	-0.267880603671073914,	0.632147431373596191,	-0.463066495954990387,	0.356451364234089851,	-0.050419993698596954,	0.256770908832550049,	8.15050315856933593},
++    {-0.259570568799972534,	0.058607080718502402,	0.259044829756021500,	0.280666768550872803,	-0.538186013698577881,	0.341381832025945187,	1.518739491701126099,	-0.667554745450615883,	1.751119256019592285,	0.618478022515773773,	0.099981427192687988,	-0.464015564997680485,	-12.519432425498962402,	-0.416654400527477264,	0.446537002921104431,	0.571416035294532776,	2.002235025167465210,	0.100399120245128870,	1.832653731107711792,	0.172120401635766029,	-0.795603513717651367,	0.111067265272140503,	0.403840450104326010,	0.067548757418990135,	-0.377464681863784790,	20.31706809997558593},
++    {-0.144589453935623169,	-0.325483724474906921,	0.217022754251956940,	0.019517183303833008,	-0.152866885066032410,	-0.247543923556804657,	-0.037033908069133759,	1.201269006356596947,	0.193409975618124008,	-0.196779534220695496,	0.204731486737728119,	0.960812507197260857,	5.010227888822555542,	1.268514908850193024,	0.435031412169337273,	-0.279843293130397797,	-0.121619869023561478,	1.128229849040508270,	0.412993662059307098,	0.132374726235866547,	-0.099359117448329926,	0.003424361348152161,	0.243624486029148102,	-0.084304571151733398,	0.061960373073816299,	9.24633407592773437},
++    {-0.425834208726882935,	-0.454002328217029572,	1.010650083422660828,	0.248395048081874847,	-0.305101156234741211,	-0.330582648515701294,	-0.154917642474174500,	0.301883572712540627,	-0.267188372090458870,	-0.175993010401725769,	0.050205443054437637,	-0.142562225461006165,	-1.157892495393753052,	0.083242779597640038,	1.130744233727455139,	-0.307793937623500824,	-0.432022968307137489,	-0.517918940633535385,	0.156486531719565392,	0.106902253814041615,	-0.633093655109405518,	-0.136228755116462708,	0.663866309856530279,	0.122063808143138885,	-0.129891157150268555,	31.07062339782714843},
++    {-0.398894220590591431,	0.117905560880899429,	0.124337688088417053,	0.411547407507896423,	-0.450821012258529663,	0.279386231675744057,	1.314599290490150452,	-1.815330237150192261,	1.599968120455741882,	0.480419889092445374,	0.355715334415435791,	-1.618135922588407993,	-15.381520748138427734,	-1.490327909588813782,	0.000023968517780304,	0.249264568090438843,	1.428162530064582825,	-1.869125708937644958,	1.683564841747283936,	0.287783822044730186,	-0.625387787818908691,	0.409743428230285645,	0.035750344395637512,	0.131784345954656601,	-0.405681431293487549,	12.93481254577636718},
++    {-0.652367591857910156,	-0.491977199912071228,	0.380496464669704437,	-0.663040697574615479,	-0.581511378288269043,	-0.236203722655773163,	-0.425510859116911888,	-1.892283573746681213,	-0.475377079099416733,	-0.221853168681263924,	0.839526478201150894,	-0.700188349932432175,	-5.939714580774307251,	-0.627717167139053345,	0.806376725435256958,	-0.349689487367868423,	0.232741281390190125,	-0.343203336000442505,	0.108624394983053207,	-0.038165207020938396,	-0.727682948112487793,	-0.166237562894821167,	0.933419495820999146,	-0.214750587008893490,	-0.384983777999877930,	23.07163238525390625},
++    {1.114573597908020020,	1.935578942298889160,	1.002240911126136780,	1.089911725372076035,	0.650280416011810303,	1.576933264732360840,	2.446275353431701660,	3.380551278591156006,	1.636149667203426361,	0.770582973957061768,	1.631332039833068848,	4.458201646804809570,	12.178270816802978516,	2.452150881290435791,	-0.080906652845442295,	1.384100794792175293,	2.195077627897262573,	4.480681300163269043,	2.189621031284332275,	1.538971304893493652,	0.983429968357086182,	0.428009316325187683,	0.162547968327999115,	0.947288066148757935,	0.790885627269744873,	-14.96619796752929687},
++    {0.746033251285552979,	1.399210184812545776,	1.197367489337921143,	1.446634232997894287,	0.450768649578094482,	0.877765014767646790,	-0.319594534114003181,	-3.035345777869224548,	0.017589792609214783,	0.589768260717391968,	1.289742767810821533,	-2.355267122387886047,	-5.500543415546417236,	-2.229622349143028259,	0.488616362679749727,	0.587354436516761780,	-1.869761973619461060,	-5.084250628948211670,	-1.697609931230545044,	0.299639433622360229,	0.536627650260925293,	0.491504337638616562,	-0.060193121433258057,	0.531482338905334473,	0.736018896102905273,	9.47480773925781250},
++    {0.632710754871368408,	0.344750374555587769,	-0.641078948974609375,	0.034193694591522217,	0.522326588630676270,	0.517025753855705261,	0.510758282616734505,	2.106916949152946472,	-0.269351625815033913,	-0.202299974858760834,	-0.352388598024845123,	2.424095213413238525,	12.217964887619018555,	1.627330139279365540,	-0.744773864746093750,	0.016246542334556580,	-0.485027596354484558,	1.336451018229126930,	-0.340743590146303177,	-0.102084739133715630,	0.477051407098770142,	-0.192540496587753296,	-1.342559695243835449,	-0.126954227685928345,	0.398081272840499878,	0.50167071819305419},
++    {0.583012640476226807,	0.778568565845489502,	0.069217439740896225,	0.455048441886901855,	0.768935739994049072,	0.407927215099334717,	0.580781169235706329,	3.649559214711189270,	0.927601054310798645,	0.338159166276454926,	-1.122199863195419312,	1.538223046809434891,	13.074942469596862793,	1.138350039720535278,	-1.215104028582572937,	-0.463893476873636246,	-0.374515071511268616,	-0.012213282752782106,	-1.706459939479827881,	-0.330103402491658926,	0.409134149551391602,	-0.454725801944732666,	-1.996819436550140381,	-0.335915334522724152,	0.291942536830902100,	12.17551422119140625},
++    {-0.477846503257751465,	0.205328799784183502,	-0.068313039839267731,	0.393249578773975372,	-0.636213362216949463,	0.314126595854759216,	1.612811759114265442,	-2.515896230936050415,	1.512013390660285950,	0.486667525023221970,	-0.059700632467865944,	-2.156073741614818573,	-16.792820572853088379,	-2.200225926935672760,	-0.048274032771587372,	0.074095249176025391,	1.402246087789535522,	-1.588094748556613922,	1.579838693141937256,	-0.063495263457298279,	-0.663785874843597412,	0.144635140895843506,	0.190607160329818726,	0.236920051276683807,	-0.490726858377456665,	16.38441658020019531},
++    {-0.008939996361732483,	0.590175747871398926,	-0.206986261531710625,	0.039545036852359772,	-0.280074983835220337,	0.625891931354999542,	1.931547790765762329,	-0.213489258661866188,	0.368325844407081604,	-0.259700346738100052,	-0.468196526169776917,	-0.384401201270520687,	-7.293876349925994873,	-0.696731764823198318,	-0.814786657691001892,	0.233686439692974091,	1.653956979513168335,	-0.447297614067792892,	0.134037474170327187,	-0.314562402665615082,	-0.519906878471374512,	-0.049457833170890808,	-1.051689267158508301,	-0.598498985171318054,	-0.219738110899925232,	19.85300636291503906},
++    {0.131850764155387878,	-0.290413849055767059,	-0.412989083677530289,	-0.500133929774165154,	0.054073505103588104,	-0.181994159705936909,	-0.955939769744873047,	1.343786943703889847,	-0.382180714979767799,	-0.350627962499856949,	0.134472072124481201,	1.472259521484375000,	11.238307237625122070,	1.358116267248988152,	-0.219098494388163090,	-0.344682036899030209,	-1.142811253666877747,	0.850963942706584930,	-0.832457479089498520,	-0.109189298003911972,	0.139174669981002808,	-0.473570207133889198,	-0.480097837746143341,	-0.132403029943816364,	0.201003909111022949,	1.92359244823455810},
++    {1.322166204452514648,	0.537008348852396011,	-1.864565789699554443,	-0.030555725097656250,	0.861274957656860352,	0.483740389347076416,	1.397591948509216309,	5.705618083477020264,	0.637133628129959106,	-0.003916203975677490,	-1.738944202661514282,	5.482592642307281494,	24.310137033462524414,	4.432452052831649780,	-1.745808064937591553,	0.118200004100799561,	0.546492561697959900,	4.561374247074127197,	0.236365608870983124,	0.386006012558937073,	0.821115911006927490,	-0.257165968418121338,	-2.288987576961517334,	0.145787000656127930,	1.040281891822814941,	1.85456633567810058},
++    {-0.340963125228881836,	-0.027683973312377930,	0.606909126043319702,	0.046910559292882681,	-0.311386764049530029,	-0.047873213887214661,	-0.101761452853679657,	-0.695742623880505562,	0.134182743728160858,	-0.000455122441053391,	0.617509961128234863,	-0.706773981451988220,	-3.001237154006958008,	-0.462189055979251862,	0.743675440549850464,	-0.374693825840950012,	-0.591353550553321838,	-0.657937295734882355,	-0.219790570437908173,	-0.044361849781125784,	-0.375669926404953003,	-0.224037781357765198,	0.148250676691532135,	-0.359430279582738876,	-0.121336817741394043,	9.06965255737304687},
++    {-0.898303866386413574,	0.228558858856558800,	0.344870854169130325,	0.591840684413909912,	-0.960920870304107666,	0.176359806209802628,	2.572381556034088135,	-1.786534070968627930,	3.018344759941101074,	0.107222080230712891,	0.242146801203489304,	-1.695950946770608425,	-20.861975669860839844,	-0.625483386218547821,	0.355303928256034851,	0.292948111891746521,	2.388822913169860840,	-2.593697652220726013,	2.933838844299316406,	0.250380882993340492,	-1.059404730796813965,	0.246899396181106567,	0.232556462287902832,	0.251021102070808411,	-0.901340603828430176,	8.18464374542236328},
++    {0.029355322942137718,	-0.003621982410550117,	0.043489595409482718,	0.077074162662029266,	0.008046335540711880,	-0.009049841202795506,	-0.042674213647842407,	-0.218496724963188171,	-0.156568855047225952,	-0.017269298434257507,	-0.049902215600013733,	-0.214512581005692482,	-0.207400767365470529,	-0.096159793436527252,	-0.115486430004239082,	-0.217265129089355469,	-0.218508630990982056,	0.154563439078629017,	-0.258325101807713509,	-0.070573844015598297,	0.046733859926462173,	0.162340551614761353,	-0.087060697376728058,	-0.105443984270095825,	-0.030009008944034576,	-0.41411218047142028},
++    {-0.015765251591801643,	-0.152583315968513489,	-0.010850555263459682,	-0.190165519714355469,	-0.078747801482677460,	-0.067389322444796562,	-0.195272361859679222,	-0.172820076346397400,	-0.039025388658046722,	0.101237613707780838,	0.164024943485856056,	-0.016166489571332932,	-0.168916159775108099,	0.001730886753648520,	0.173032175749540329,	-0.000179514288902283,	0.015233216807246208,	-0.040297571569681168,	0.208219602704048157,	0.008382888161577284,	0.103569656610488892,	0.049294440075755119,	-0.089980442076921463,	-0.225949451327323914,	0.117744870483875275,	-0.73297595977783203},
++    {0.386690884828567505,	0.118513487279415131,	-0.724564190953969955,	-0.348507374525070190,	0.211970463395118713,	0.280317302327603102,	0.666222028434276581,	2.971766397356987000,	0.153887465596199036,	-0.369524255394935608,	-0.918300084769725800,	2.814616173505783081,	11.508929848670959473,	2.385662481188774109,	-0.881893411278724670,	-0.028632372617721558,	0.577021174132823944,	2.229048267006874084,	0.223931722342967987,	0.093865798786282539,	0.308993846178054810,	-0.116103302687406540,	-0.497097663581371307,	0.553785204887390137,	0.215205013751983643,	10.04900360107421875},
++    {-0.078964300453662872,	-0.094582751393318176,	0.156624254304915667,	-0.296766992658376694,	-0.010343193076550961,	-0.241189084947109222,	-0.760210432112216949,	1.146000973880290985,	-0.464463091571815312,	-0.198643483221530914,	0.081696633249521255,	0.765032846480607986,	5.485029429197311401,	0.447005447000265121,	0.133076970931142569,	-0.250659856945276260,	-0.421130804345011711,	0.505613636225461960,	-0.425211403518915176,	-0.189377691596746445,	-0.102694146335124969,	-0.218432795256376266,	-0.067720573861151934,	-0.257147066295146942,	0.088538587093353271,	7.54936122894287109},
++    {-0.372766733169555664,	-0.569194227457046509,	-0.387378081679344177,	-0.602740487083792686,	-0.232452094554901123,	-0.155784908682107925,	-0.452816869132220745,	0.908603027462959290,	-0.517421446857042611,	-0.265578411519527435,	0.066966719925403595,	1.047797471284866333,	7.460124135017395020,	1.301786839962005615,	0.512289922684431076,	-0.394055258482694626,	-0.212025687098503113,	1.328204773366451263,	-0.021351695060729980,	-0.220194406807422638,	-0.125378638505935669,	-0.119379196316003799,	0.450519561767578125,	0.210214540362358093,	0.096486665308475494,	18.56090545654296875},
++    {1.016832351684570312,	0.495078213512897491,	-2.101282030344009399,	0.077948629856109619,	0.902903199195861816,	0.797458380460739136,	1.578770250082015991,	3.544915318489074707,	-0.000691115856170654,	-0.383640028536319733,	-2.051332414150238037,	4.417339414358139038,	19.084079861640930176,	2.435387194156646729,	-2.517963767051696777,	0.689558185636997223,	1.642739009112119675,	3.313484996557235718,	-0.322209924459457397,	-0.117541387677192688,	0.824332714080810547,	-0.555043488740921021,	-2.930564343929290771,	0.040775120258331299,	0.855296254158020020,	11.50461864471435546},
++    {-0.482572883367538452,	-0.207433119416236877,	0.769328102469444275,	-0.200717031955718994,	-0.339971095323562622,	-0.199297029525041580,	-0.526607781648635864,	-0.330924712121486664,	-0.687967404723167419,	-0.285298407077789307,	0.503813192248344421,	-0.353828684426844120,	0.403876342810690403,	-0.023111594840884209,	0.738680064678192139,	-0.521845877170562744,	-1.107832118868827820,	-0.514215346425771713,	-0.339465968310832977,	-0.135228395462036133,	-0.273148059844970703,	-0.319259554147720337,	0.636311337351799011,	-0.123013943433761597,	-0.264071971178054810,	17.18814086914062500},
++  };
++
++  double b_luma[64] =
++  { 0.035809606313705444,	0.152922227978706360,	-0.017384722828865051,	0.046703882515430450,	0.167662426829338074,	0.000706688326317817,	-0.003415157319977880,	-0.003834186121821404,	0.081147976219654083,	0.143630400300025940,	0.107647851109504700,	0.068554788827896118,	0.000853117497172207,	0.314547300338745117,	0.052171755582094193,	0.140581518411636353,	0.306397557258605957,	0.092583820223808289,	0.128893136978149414,	0.046379197388887405,	0.122217841446399689,	0.055613610893487930,	-0.001743366825394332,	0.002296684542670846,	0.114392191171646118,	0.049967870116233826,	0.109309606254100800,	0.159108638763427734,	0.109050445258617401,	0.193062767386436462,	0.150659546256065369,	0.175074890255928040,	0.097786009311676025,	-0.002541433786973357,	0.001508230809122324,	0.044271018356084824,	0.362856507301330566,	0.100310020148754120,	0.104824602603912354,	0.053333606570959091,	0.190585896372795105,	0.066935345530509949,	0.110490344464778900,	0.099577359855175018,	0.222551167011260986,	0.058559656143188477,	0.176794350147247314,	-0.045105129480361938,	0.073986068367958069,	0.040310513228178024,	0.095978520810604095,	0.080438219010829926,	0.103475987911224365,	0.051437824964523315,	0.031904742121696472,	0.087496511638164520,	0.042744297534227371,	0.000078962119005155,	-0.005352562293410301,	0.050633504986763000,	0.087250076234340668,	0.150950551033020020,	0.092837654054164886,	0.14541338384151458 };
++  
++  double w_boundary1[32][3] =
++  {
++    {0.061087697744369507,	-0.002568802330642939,	-0.00052559247706085},
++    {-0.058981116861104965,	-0.053044229745864868,	0.05636227130889892},
++    {0.095076799392700195,	-0.092507742345333099,	-0.11961888521909713},
++    {-0.004336840938776731,	0.082736968994140625,	0.04910176992416381},
++    {-0.059273410588502884,	-0.071551389992237091,	-0.02267203107476234},
++    {-0.075586222112178802,	0.001361123402602971,	-0.00106380356010049},
++    {0.019665908068418503,	-0.071920119225978851,	-0.07113824039697647},
++    {0.085251882672309875,	-0.041666794568300247,	-0.01036867126822471},
++    {-0.003635479602962732,	0.110220097005367279,	0.06306862086057663},
++    {-0.070127405226230621,	-0.029427202418446541,	0.15008607506752014},
++    {-0.112034365534782410,	0.077012769877910614,	0.02063076198101043},
++    {0.093680009245872498,	0.035042162984609604,	0.01471674535423517},
++    {-0.068632237613201141,	-0.061989374458789825,	-0.07111049443483352},
++    {0.010303809307515621,	-0.008404580876231194,	-0.05484115704894065},
++    {-0.002346072578802705,	-0.156168207526206970,	-0.08593070507049560},
++    {-0.105784825980663300,	0.090259000658988953,	0.04637300595641136},
++    {-0.097041226923465729,	-0.071140207350254059,	0.11385452002286911},
++    {-0.042418666183948517,	0.010705745778977871,	0.08066418766975402},
++    {-0.060440175235271454,	0.005125257186591625,	0.00096282229060307},
++    {0.111128531396389008,	-0.051330417394638062,	-0.01801999844610691},
++    {0.028609504923224449,	-0.101868964731693268,	-0.10058447718620300},
++    {0.026040887460112572,	0.028050336986780167,	0.02122805826365947},
++    {0.088513106107711792,	-0.085162550210952759,	-0.11074747145175933},
++    {0.001144360983744264,	0.184222981333732605,	0.09858880937099456},
++    {-0.028672447428107262,	0.035056464374065399,	0.04014343768358230},
++    {-0.053204324096441269,	0.121441908180713654,	-0.16085614264011383},
++    {-0.084171436727046967,	-0.154979810118675232,	-0.03610196337103843},
++    {-0.000157017842866480,	0.018814368173480034,	0.12254644185304641},
++    {0.044482719153165817,	-0.035411935299634933,	-0.01711706630885601},
++    {-0.041626773774623871,	0.097658477723598480,	-0.12598764896392822},
++    {0.000504700932651758,	0.021388137713074684,	0.12721036374568939},
++    {0.091333761811256409,	0.033368136733770370,	0.01649796962738037},
++  };
++
++  double b_boundary1[32] =
++  { -0.032825097441673279,	0.005918091628700495,	0.025737516582012177,	-0.064978174865245819,	0.053061921149492264,	0.019463833421468735,	0.050535127520561218,	-0.043173409998416901,	-0.086901687085628510,	-0.067077025771141052,	-0.034522946923971176,	-0.092828080058097839,	0.066225118935108185,	0.024680474773049355,	0.119864702224731445,	-0.054405163973569870,	-0.008922074921429157,	-0.044393841177225113,	0.020165069028735161,	-0.055111497640609741,	0.071493886411190033,	-0.048571012914180756,	0.022901268675923347,	-0.142327457666397095,	-0.042214017361402512,	0.017676409333944321,	0.096021570265293121,	-0.070834606885910034,	-0.016926983371376991,	0.012404511682689190,	-0.074167393147945404,	-0.09102216362953186 };
++
++  double w_boundary2[3][32] =
++  {
++    {-0.000817017280496657,	-0.314785718917846680,	-0.267735481262207031,	-0.056508827954530716,	0.168104976415634155,	0.000523323193192482,	-0.281209856271743774,	-0.051770433783531189,	0.054642271250486374,	0.199561774730682373,	0.241046085953712463,	0.189448028802871704,	-0.192342057824134827,	-0.009588749147951603,	0.026740001514554024,	-0.224854707717895508,	0.081501662731170654,	-0.277080625295639038,	0.007260657381266356,	0.028833875432610512,	0.186787247657775879,	-0.273367643356323242,	0.316509872674942017,	-0.021524166688323021,	0.150217130780220032,	0.211430475115776062,	-0.116688996553421021,	-0.321081966161727905,	-0.169190511107444763,	-0.268604815006256104,	-0.389997065067291260,	-0.18441155552864074},
++    {-0.000029901380912634,	-0.000386761123081669,	-0.036104556173086166,	0.000669767963699996,	0.000221528447582386,	0.000025038914827746,	-0.000485477416077629,	0.001178673468530178,	-0.000761204049922526,	-0.000104696511698421,	-0.000068402201577555,	0.000236537933233194,	0.001862384262494743,	-0.000385337421903387,	0.000081939491792582,	-0.000064132087572943,	0.000091802445240319,	0.000584285357035697,	0.000043105646909680,	-0.001161886029876769,	0.000691621098667383,	-0.000980579294264317,	0.039487108588218689,	-0.000178869348019361,	0.000835341343190521,	-0.095867291092872620,	-0.000476756045827642,	0.000060536916862475,	0.000493262719828635,	0.121081590652465820,	0.000030857736419421,	0.00005553310256800},
++    {0.006962390616536140,	-0.242645084857940674,	0.227836489677429199,	-0.362138867378234863,	0.075680486857891083,	0.006642636843025684,	-0.266864687204360962,	0.342362046241760254,	0.247975975275039673,	-0.013709643855690956,	-0.125446125864982605,	0.150672689080238342,	-0.060130868107080460,	0.001805696054361761,	-0.028038604184985161,	0.112097196280956268,	0.136596158146858215,	0.007676893845200539,	0.001051846658810973,	-0.242746531963348389,	0.170464426279067993,	-0.340502589941024780,	-0.225693494081497192,	-0.541817665100097656,	-0.193721055984497070,	0.212995305657386780,	0.050606932491064072,	-0.112890318036079407,	0.014806715771555901,	-0.267937242984771729,	0.105862349271774292,	-0.15986303985118866},
++  };
++
++  double b_boundary2[3] =
++  { -0.002049663104116917,	0.000013826907888870,	-0.00128335552290082 };
++
++
++  double w_att_b[16][32] =
++  {
++    {0.172963932156562805,	-0.115949802100658417,	-0.119329802691936493,	0.120661556720733643,	0.204295486211776733,	0.063494451344013214,	0.275633722543716431,	-0.302975296974182129,	0.213513985276222229,	0.217851087450981140,	-0.219430834054946899,	0.283415585756301880,	-0.188821166753768921,	-0.159036263823509216,	0.033458422869443893,	-0.221694976091384888,	-0.331789612770080566,	0.142091915011405945,	-0.212649717926979065,	-0.322356134653091431,	-0.083692453801631927,	0.245649620890617371,	0.020256409421563148,	-0.279249340295791626,	0.258360385894775391,	-0.125807508826255798,	0.325965881347656250,	0.096023082733154297,	0.250216275453567505,	-0.176470428705215454,	0.093831993639469147,	0.22774192690849304},
++    {0.216292649507522583,	-0.070562928915023804,	-0.196078181266784668,	0.086770921945571899,	0.337184160947799683,	0.276219815015792847,	-0.082038909196853638,	0.177849084138870239,	-0.283086717128753662,	0.109996616840362549,	-0.083915293216705322,	0.205301016569137573,	-0.025354772806167603,	-0.188044995069503784,	0.222432285547256470,	0.245108932256698608,	-0.229019910097122192,	0.333763688802719116,	0.018112361431121826,	0.309959203004837036,	-0.117192253470420837,	-0.255880087614059448,	0.257359892129898071,	-0.325079321861267090,	-0.241689741611480713,	-0.095510900020599365,	-0.039462864398956299,	-0.305538594722747803,	-0.126024812459945679,	0.170051008462905884,	-0.197077646851539612,	-0.02429166436195373},
++    {-0.219562888145446777,	-0.250544995069503784,	-0.136255323886871338,	-0.037886541336774826,	-0.525798738002777100,	-0.414672464132308960,	0.190087854862213135,	0.051669288426637650,	-0.108420059084892273,	-0.182315766811370850,	-0.637441039085388184,	-0.399400323629379272,	0.262686610221862793,	0.019732566550374031,	0.046683378517627716,	-0.413798302412033081,	0.262206822633743286,	0.251684844493865967,	-0.669002175331115723,	-0.506656467914581299,	0.081344813108444214,	-0.144458651542663574,	0.170207247138023376,	0.245430350303649902,	-0.478877753019332886,	0.222504347562789917,	-0.153395250439643860,	0.097772814333438873,	-0.367607533931732178,	0.053676057606935501,	0.129087403416633606,	-0.13540813326835632},
++    {-0.759858787059783936,	-0.202722132205963135,	-0.148004755377769470,	-0.159253880381584167,	-0.288272768259048462,	-0.711452722549438477,	0.252148956060409546,	-0.124232880771160126,	0.063153520226478577,	-0.088526561856269836,	-0.125285044312477112,	0.014228041283786297,	0.120238281786441803,	-0.368662178516387939,	-0.201985210180282593,	0.019450884312391281,	0.094284676015377045,	-0.045464191585779190,	-0.562621414661407471,	-0.118554651737213135,	-0.238251984119415283,	-0.043619096279144287,	0.193478703498840332,	-0.203020572662353516,	-0.101373761892318726,	-0.134522065520286560,	-0.082905597984790802,	-0.418922781944274902,	-0.360462844371795654,	0.063047729432582855,	0.137501001358032227,	-0.23920600116252899},
++    {0.117353811860084534,	-0.253623515367507935,	0.147685423493385315,	0.157527387142181396,	-0.251154512166976929,	-0.224288731813430786,	-0.333361357450485229,	0.096446834504604340,	-0.156173691153526306,	-0.069441743195056915,	-0.138105079531669617,	-0.177908480167388916,	-0.335380285978317261,	0.111996747553348541,	-0.111419953405857086,	0.221973374485969543,	0.030246963724493980,	-0.179407715797424316,	0.225907132029533386,	-0.302838802337646484,	0.169531837105751038,	-0.240133494138717651,	0.107052728533744812,	0.351058840751647949,	0.120362266898155212,	0.093654282391071320,	0.104546479880809784,	-0.285112082958221436,	-0.229124993085861206,	-0.301374495029449463,	0.272721946239471436,	-0.28449204564094543},
++    {-0.087323375046253204,	0.006695915013551712,	0.226759254932403564,	0.316013693809509277,	-0.018704529851675034,	0.126614704728126526,	-0.175369977951049805,	-0.196455389261245728,	-0.112259842455387115,	-0.231840476393699646,	0.033159557729959488,	0.321326225996017456,	0.144888684153556824,	-0.268991202116012573,	-0.202683091163635254,	-0.029066586866974831,	-0.020728236064314842,	0.264162957668304443,	-0.171420648694038391,	-0.129591107368469238,	0.191856682300567627,	0.105669558048248291,	-0.220585554838180542,	-0.045549988746643066,	-0.234194502234458923,	-0.208856388926506042,	-0.189285740256309509,	0.114905647933483124,	0.004584136418998241,	0.170105278491973877,	0.285769760608673096,	0.03286759182810783},
++    {0.509819328784942627,	0.130671560764312744,	0.385030329227447510,	-0.213527128100395203,	-0.501950263977050781,	-0.965857863426208496,	0.037712980061769485,	-0.169017389416694641,	-0.234834164381027222,	-0.208385199308395386,	-0.806068241596221924,	0.421579241752624512,	-0.132367655634880066,	0.157835230231285095,	0.213278070092201233,	-0.805208265781402588,	-0.095316767692565918,	0.062238533049821854,	-0.961255550384521484,	0.258248686790466309,	-0.120852120220661163,	0.251969307661056519,	-0.255266189575195312,	0.200397282838821411,	-0.105946958065032959,	0.029442880302667618,	-0.429167866706848145,	0.155168578028678894,	0.362626910209655762,	-0.086016394197940826,	-0.385970622301101685,	0.53694909811019897},
++    {0.005843767430633307,	0.077479802072048187,	-0.189058065414428711,	0.334102809429168701,	-0.214365050196647644,	-0.750744104385375977,	0.178813889622688293,	0.154402911663055420,	-0.184055298566818237,	-0.006242282222956419,	-0.956494212150573730,	-0.054198548197746277,	-0.139067843556404114,	0.110976286232471466,	0.147817507386207581,	-0.320088148117065430,	0.135519236326217651,	-0.058341227471828461,	-1.134575605392456055,	0.032693393528461456,	0.240928947925567627,	-0.196747362613677979,	-0.388940215110778809,	-0.173493921756744385,	-0.075604237616062164,	0.266456693410873413,	-0.186884954571723938,	0.205364823341369629,	0.153811529278755188,	-0.309461832046508789,	0.237554907798767090,	-0.19410747289657592},
++    {-0.227327316999435425,	0.080579765141010284,	0.223073393106460571,	-0.281924545764923096,	-0.199093431234359741,	-0.106066368520259857,	-0.221892103552818298,	-0.343548923730850220,	-0.295845538377761841,	0.287503153085708618,	0.008484969846904278,	-0.290152996778488159,	0.260702639818191528,	0.354406297206878662,	-0.224718838930130005,	0.262914955615997314,	0.067661911249160767,	-0.158425807952880859,	-0.058186706155538559,	0.079384274780750275,	-0.279067277908325195,	-0.033170446753501892,	-0.168823927640914917,	-0.091258019208908081,	-0.064498461782932281,	0.121879234910011292,	0.268652588129043579,	-0.133232012391090393,	0.238527983427047729,	0.074014909565448761,	-0.264206439256668091,	-0.07290086150169372},
++    {0.169866099953651428,	-0.219105899333953857,	0.146477848291397095,	-0.299427062273025513,	-0.123982280492782593,	-0.088317409157752991,	0.278490543365478516,	-0.223134577274322510,	0.008475280366837978,	-0.304592996835708618,	-0.233970448374748230,	-0.333731263875961304,	-0.333748698234558105,	-0.070818379521369934,	-0.181454509496688843,	0.030674675479531288,	-0.095662474632263184,	-0.169730097055435181,	-0.272152572870254517,	0.301544815301895142,	-0.223450660705566406,	0.292423218488693237,	-0.297978997230529785,	0.099874511361122131,	0.297256767749786377,	0.308477163314819336,	0.032927472144365311,	0.256841301918029785,	-0.284396141767501831,	0.249076977372169495,	0.331205695867538452,	-0.26007583737373352},
++    {-1.051045775413513184,	0.057907141745090485,	-0.394289016723632812,	0.474511057138442993,	0.047127805650234222,	-0.202678158879280090,	-0.302282273769378662,	-0.765954077243804932,	0.361205905675888062,	0.028070723637938499,	-0.061043947935104370,	-1.033671736717224121,	0.315782517194747925,	-0.508623361587524414,	0.045531105250120163,	0.324743688106536865,	-0.234507396817207336,	-0.030099919065833092,	-0.088056035339832306,	-0.364580512046813965,	0.287285894155502319,	-0.155500844120979309,	-0.013711668550968170,	-0.213360026478767395,	0.284961074590682983,	-0.024361947551369667,	0.920391201972961426,	-0.020038332790136337,	-0.839390158653259277,	0.074366018176078796,	0.080411508679389954,	-0.71431082487106323},
++    {0.099501587450504303,	0.027134504169225693,	-0.022010782733559608,	-0.056016903370618820,	-0.241665065288543701,	-0.959767043590545654,	-0.311436802148818970,	0.165313988924026489,	-0.486530005931854248,	-0.055605128407478333,	-0.709901630878448486,	0.126787647604942322,	-0.477293163537979126,	0.422844141721725464,	-0.011535350233316422,	-0.743610143661499023,	0.117382764816284180,	-0.144725784659385681,	-0.946951746940612793,	-0.252226352691650391,	-0.271980077028274536,	0.099612042307853699,	0.300726115703582764,	0.251120626926422119,	-0.173266202211380005,	-0.276855647563934326,	-0.556056082248687744,	0.143419682979583740,	0.359169453382492065,	-0.237799108028411865,	0.086404204368591309,	0.15449951589107513},
++    {-1.222875833511352539,	-0.070394329726696014,	-0.037876915186643600,	0.372149199247360229,	-0.064089588820934296,	0.103790648281574249,	0.021054049953818321,	-0.750511527061462402,	-0.034272857010364532,	0.197456985712051392,	0.118639215826988220,	-0.906732141971588135,	0.650109589099884033,	0.042427271604537964,	0.003804777516052127,	0.419371306896209717,	0.075575865805149078,	0.076205529272556305,	0.589034438133239746,	-0.806401073932647705,	0.082386270165443420,	0.046030551195144653,	-0.211760669946670532,	-0.228838071227073669,	0.271547973155975342,	0.210247501730918884,	0.435526639223098755,	0.166907310485839844,	-0.535369098186492920,	-0.085432074964046478,	-0.247896566987037659,	-0.61563867330551147},
++    {0.305743485689163208,	0.013997565023601055,	-0.185135841369628906,	0.161649718880653381,	0.199862465262413025,	-0.123820647597312927,	-0.095158793032169342,	-0.180033981800079346,	-0.203908234834671021,	-0.288562625646591187,	-0.269029647111892700,	0.221047416329383850,	0.317059457302093506,	0.350693672895431519,	0.343853861093521118,	-0.047923952341079712,	-0.068492166697978973,	0.209243550896644592,	-0.229818582534790039,	0.196661487221717834,	-0.173543319106101990,	-0.294439464807510376,	0.242952838540077209,	0.264925897121429443,	-0.020161440595984459,	0.322991639375686646,	0.034892495721578598,	-0.232954114675521851,	-0.224704816937446594,	0.351987451314926147,	-0.276708424091339111,	0.02141712605953216},
++    {0.053942006081342697,	0.129459843039512634,	-0.117880016565322876,	-0.225647389888763428,	0.262103438377380371,	-0.237365737557411194,	-0.221892386674880981,	0.064037732779979706,	-0.020164748653769493,	0.247360825538635254,	-0.174338713288307190,	0.085950389504432678,	0.146734282374382019,	0.087769612669944763,	0.284183263778686523,	0.043726202100515366,	0.342190355062484741,	-0.026673037558794022,	0.205452650785446167,	0.344458103179931641,	0.289758443832397461,	-0.047408305108547211,	0.374410241842269897,	0.199221432209014893,	0.234881430864334106,	0.058386251330375671,	-0.387224435806274414,	0.301667869091033936,	-0.137325912714004517,	0.240651577711105347,	0.018177226185798645,	-0.10220957547426223},
++    {-0.337615907192230225,	-0.283254861831665039,	0.059195004403591156,	0.278313815593719482,	-0.558192968368530273,	-0.697794735431671143,	0.048923429101705551,	0.094516918063163757,	0.000885302026290447,	-0.284777611494064331,	-1.051405429840087891,	-0.029085358604788780,	-0.441578447818756104,	-0.023074598982930183,	-0.162700802087783813,	-0.157095342874526978,	0.143069878220558167,	-0.224738955497741699,	-0.990087091922760010,	0.208591863512992859,	0.171391546726226807,	-0.440742641687393188,	-0.322641789913177490,	0.104471363127231598,	-0.597458362579345703,	-0.053040277212858200,	-0.325179845094680786,	0.236545398831367493,	0.295335203409194946,	-0.001120386295951903,	-0.255437642335891724,	0.01254596095532178},
++
++  };
++
++  double b_att_b[16] =
++  { 0.001914706197567284,	0.000000000000000000,	0.575931012630462646,	0.020664988085627556,	-0.000194145206478424,	-0.000000006463240165,	0.606246531009674072,	0.565559983253479004,	0.000776525936089456,	-0.016886539757251740,	0.676427185535430908,	0.628164112567901611,	0.777201294898986816,	-0.011331371031701565,	-0.003284780075773597,	0.65803468227386474 };
++
++
++  double w_att_x[16][64] =
++  {
++    {0.196572825312614441,	0.052200406789779663,	-0.196845874190330505,	-0.119151234626770020,	-0.074823334813117981,	-0.048133973032236099,	0.150235608220100403,	-0.096550919115543365,	0.239084318280220032,	0.136786401271820068,	0.091311953961849213,	-0.176625743508338928,	0.064400456845760345,	-0.163232252001762390,	-0.048040289431810379,	-0.110574983060359955,	0.112521968781948090,	0.048034392297267914,	-0.210063606500625610,	-0.216459423303604126,	0.199122354388237000,	-0.123841211199760437,	-0.042827162891626358,	0.253997325897216797,	-0.153448894619941711,	-0.268080055713653564,	0.243609622120857239,	0.187358841300010681,	-0.017898213118314743,	-0.203228861093521118,	-0.005315376445651054,	0.035070814192295074,	0.187993556261062622,	0.217600077390670776,	-0.173007145524024963,	-0.210126876831054688,	0.149026468396186829,	-0.103546127676963806,	-0.240648165345191956,	0.050150953233242035,	0.184748247265815735,	-0.127163723111152649,	0.146559402346611023,	-0.272623687982559204,	-0.090371884405612946,	-0.095893524587154388,	-0.262936681509017944,	0.200285255908966064,	-0.015855317935347557,	-0.204116106033325195,	0.146319061517715454,	0.149793103337287903,	0.158702254295349121,	-0.191768616437911987,	-0.246785536408424377,	0.001773666474036872,	0.111688546836376190,	-0.000438030692748725,	0.034412648528814316,	-0.263665169477462769,	0.063279651105403900,	0.236595526337623596,	-0.150435075163841248,	-0.20041388273239135},
++    {0.075382918119430542,	0.108627498149871826,	-0.206223487854003906,	-0.102394297719001770,	-0.057802215218544006,	-0.255887269973754883,	0.047809094190597534,	-0.192042902112007141,	-0.165253132581710815,	-0.038871243596076965,	0.063059210777282715,	-0.181094855070114136,	-0.117044761776924133,	0.266146361827850342,	0.158799707889556885,	-0.169847846031188965,	0.039509952068328857,	-0.197761058807373047,	-0.132154345512390137,	-0.218895286321640015,	-0.226597264409065247,	0.099678218364715576,	-0.254893153905868530,	0.011947542428970337,	-0.012820214033126831,	0.101293832063674927,	-0.259218096733093262,	-0.233876317739486694,	-0.065412908792495728,	-0.111363291740417480,	0.044282734394073486,	-0.193217933177947998,	0.154686987400054932,	0.109350502490997314,	0.093281090259552002,	0.230516195297241211,	-0.097556635737419128,	0.026681780815124512,	-0.078209742903709412,	0.144806355237960815,	-0.207928836345672607,	0.010505616664886475,	0.054516464471817017,	-0.210683584213256836,	-0.210788369178771973,	0.177179008722305298,	0.073300898075103760,	-0.197561591863632202,	-0.263236910104751587,	0.162477374076843262,	0.231351137161254883,	-0.272241622209548950,	0.211012601852416992,	-0.153330177068710327,	-0.152807116508483887,	-0.253215044736862183,	-0.162829935550689697,	0.020389705896377563,	-0.191116645932197571,	0.148473173379898071,	0.267887830734252930,	-0.104525417089462280,	-0.103714406490325928,	-0.19377049803733825},
++    {0.661754906177520752,	0.169901132583618164,	-0.073758438229560852,	0.467785328626632690,	0.076727226376533508,	-0.056079212576150894,	0.024570144712924957,	0.295810639858245850,	0.457116961479187012,	-0.284255057573318481,	-0.220242947340011597,	-0.586226940155029297,	0.319389045238494873,	0.081265404820442200,	0.519625544548034668,	0.096039533615112305,	0.158028438687324524,	0.604610204696655273,	0.582200825214385986,	0.452598780393600464,	0.049502644687891006,	0.322317630052566528,	0.277412742376327515,	0.160295158624649048,	0.262638270854949951,	0.588093161582946777,	0.436340779066085815,	0.077570170164108276,	0.207499057054519653,	0.070684149861335754,	0.121343418955802917,	0.028493452817201614,	-0.105285093188285828,	0.225869342684745789,	-0.270234107971191406,	0.147529870271682739,	0.428481608629226685,	-0.100655324757099152,	0.370238870382308960,	0.651526033878326416,	0.376927882432937622,	-0.080757744610309601,	0.158529028296470642,	0.519656062126159668,	0.135360956192016602,	-0.343695312738418579,	0.525926053524017334,	0.086097359657287598,	0.043405566364526749,	0.463844925165176392,	0.144687980413436890,	0.247795507311820984,	0.410032451152801514,	0.569682717323303223,	0.510771095752716064,	0.300783693790435791,	-1.067016124725341797,	-0.047150935977697372,	-0.109529837965965271,	0.460809946060180664,	0.583627104759216309,	0.540906190872192383,	0.451128154993057251,	0.30101937055587768},
++    {0.164631307125091553,	0.273756593465805054,	0.498631060123443604,	0.281454056501388550,	0.461260527372360229,	0.209856167435646057,	-0.067157737910747528,	0.090859688818454742,	0.392433047294616699,	0.406265407800674438,	0.748866558074951172,	0.512976408004760742,	0.413782268762588501,	0.374789625406265259,	0.371904343366622925,	0.242085576057434082,	0.242386132478713989,	0.422186285257339478,	0.064565718173980713,	-0.041560824960470200,	0.252765536308288574,	0.456550806760787964,	-0.094927795231342316,	0.499741792678833008,	0.249121516942977905,	0.290920644998550415,	0.231515958905220032,	0.367489516735076904,	0.515740633010864258,	0.236309126019477844,	0.163498550653457642,	0.255894988775253296,	0.373994290828704834,	0.043055884540081024,	0.139805614948272705,	0.037683632224798203,	0.393942207098007202,	0.560621678829193115,	0.216862156987190247,	0.050940580666065216,	0.272740662097930908,	0.198983684182167053,	0.272722989320755005,	0.034444909542798996,	0.116491638123989105,	0.304627388715744019,	-0.000685543054714799,	0.475203007459640503,	0.617347180843353271,	0.309013724327087402,	0.308558315038681030,	0.212458252906799316,	0.049398776143789291,	0.258860617876052856,	0.413111299276351929,	0.153379291296005249,	1.179723501205444336,	0.233272507786750793,	0.226359307765960693,	0.349554121494293213,	0.038805279880762100,	0.158920615911483765,	0.139640852808952332,	0.07104212790727615},
++    {0.175907418131828308,	0.037938416004180908,	-0.269144445657730103,	-0.133425116539001465,	-0.187345862388610840,	-0.088019698858261108,	0.073995724320411682,	-0.102463304996490479,	-0.222849115729331970,	-0.089513815939426422,	0.095535852015018463,	0.034001942723989487,	0.036169424653053284,	-0.135252490639686584,	-0.173566117882728577,	0.243161559104919434,	-0.065704368054866791,	0.257143825292587280,	-0.161256566643714905,	0.161843627691268921,	-0.257597059011459351,	-0.114025376737117767,	0.063793666660785675,	0.062589883804321289,	-0.083572126924991608,	-0.214548900723457336,	-0.096609130501747131,	-0.120701089501380920,	-0.172470107674598694,	-0.061235129833221436,	0.064421497285366058,	-0.046824291348457336,	-0.031932145357131958,	-0.163373440504074097,	-0.210669487714767456,	0.232058137655258179,	0.144681721925735474,	-0.005746551323682070,	-0.270982205867767334,	0.179102480411529541,	-0.251712441444396973,	0.073314085602760315,	0.244010552763938904,	0.230232253670692444,	0.003649253863841295,	-0.102911099791526794,	-0.023157026618719101,	-0.193751156330108643,	0.202919423580169678,	-0.063769169151782990,	-0.232604235410690308,	-0.173479557037353516,	0.177258521318435669,	-0.061923906207084656,	-0.045062370598316193,	-0.259267866611480713,	0.154061153531074524,	0.220536589622497559,	0.204581424593925476,	0.100194133818149567,	-0.104579508304595947,	0.247008740901947021,	0.006136700976639986,	0.07959545403718948},
++    {-0.044516675174236298,	-0.160057246685028076,	0.156095892190933228,	0.202885180711746216,	-0.074702709913253784,	-0.196760654449462891,	0.134427443146705627,	0.008092273958027363,	-0.068630635738372803,	0.095804058015346527,	-0.058730281889438629,	0.035136330872774124,	-0.139401108026504517,	-0.178095355629920959,	-0.221677556633949280,	-0.234023362398147583,	-0.235471948981285095,	-0.148251995444297791,	-0.104911878705024719,	0.150721862912178040,	0.091863401234149933,	0.118992678821086884,	0.247361332178115845,	0.050425801426172256,	0.015150940045714378,	0.054185461252927780,	-0.131666615605354309,	-0.064216025173664093,	0.017802700400352478,	-0.205356672406196594,	-0.143246978521347046,	0.136103406548500061,	0.085643321275711060,	-0.128524765372276306,	0.058542821556329727,	0.188556492328643799,	-0.062169700860977173,	-0.172895386815071106,	-0.265448004007339478,	0.081993915140628815,	0.200576677918434143,	0.053936123847961426,	0.016535736620426178,	-0.119580022990703583,	-0.176125660538673401,	0.269564151763916016,	-0.133830830454826355,	-0.266762673854827881,	-0.017225639894604683,	-0.008218023926019669,	-0.155330389738082886,	-0.049391500651836395,	-0.206967368721961975,	0.040611200034618378,	0.035330846905708313,	0.266159385442733765,	0.265071034431457520,	0.118565306067466736,	0.123322196304798126,	-0.065531335771083832,	0.252412080764770508,	0.115762650966644287,	-0.183415219187736511,	0.10027944296598434},
++    {0.444542855024337769,	0.259234577417373657,	0.644484460353851318,	0.408225417137145996,	0.244638428092002869,	0.562679111957550049,	-0.184442758560180664,	0.845439016819000244,	1.222090244293212891,	0.165432825684547424,	0.653563439846038818,	-0.344037711620330811,	0.372363924980163574,	0.090761058032512665,	0.055063474923372269,	0.251463979482650757,	-0.227537810802459717,	-0.202324450016021729,	0.118863634765148163,	0.367461025714874268,	0.133627861738204956,	0.121608190238475800,	-0.085644319653511047,	0.481602191925048828,	-0.044850159436464310,	0.410507351160049438,	0.082043580710887909,	0.272328615188598633,	-0.360547244548797607,	0.073285408318042755,	-0.284699708223342896,	-0.201450109481811523,	-0.484715998172760010,	0.077875018119812012,	-0.164523452520370483,	-0.103483662009239197,	-0.064883090555667877,	-0.436055481433868408,	-0.230059787631034851,	0.089893579483032227,	0.177678644657135010,	0.957742273807525635,	-0.191946625709533691,	0.024851951748132706,	0.028230145573616028,	-0.194910585880279541,	-0.164021804928779602,	0.418726235628128052,	0.027137013152241707,	0.481187731027603149,	0.127110153436660767,	-0.199764549732208252,	0.135402053594589233,	-0.062821514904499054,	0.136224105954170227,	-0.251179903745651245,	-0.241471260786056519,	-0.244133025407791138,	0.103848293423652649,	0.326740354299545288,	0.224373430013656616,	0.267535746097564697,	0.216130360960960388,	0.22269935905933380},
++    {0.151847496628761292,	-0.095621988177299500,	-0.055752694606781006,	0.438371032476425171,	0.173115089535713196,	0.302815169095993042,	0.157293081283569336,	0.002284239977598190,	0.587643027305603027,	-0.118040829896926880,	-0.240533336997032166,	-0.407230496406555176,	0.318922340869903564,	-0.168717563152313232,	-0.092641867697238922,	0.101287916302680969,	0.103733606636524200,	0.320711523294448853,	0.119231432676315308,	0.248875275254249573,	0.309190392494201660,	0.342676937580108643,	-0.186444059014320374,	-0.043469544500112534,	-0.254808276891708374,	0.121773913502693176,	0.337397307157516479,	-0.070352092385292053,	-0.330179393291473389,	0.091378420591354370,	0.117242395877838135,	-0.101698122918605804,	-0.314806252717971802,	0.267675518989562988,	0.227229118347167969,	0.333037197589874268,	-0.150810807943344116,	-0.379636347293853760,	0.183511108160018921,	-0.156465381383895874,	-0.005003402940928936,	0.150821387767791748,	0.198825448751449585,	0.305417209863662720,	0.206812903285026550,	-0.394246637821197510,	-0.211989879608154297,	0.203829675912857056,	-0.232210621237754822,	0.327848434448242188,	0.382160604000091553,	-0.105279050767421722,	0.063467890024185181,	0.042445458471775055,	-0.015249692834913731,	-0.134853169322013855,	-0.742649435997009277,	-0.080220997333526611,	-0.090113230049610138,	0.312838822603225708,	0.314508825540542603,	0.060551479458808899,	0.113599091768264771,	0.12527514994144439},
++    {0.236110463738441467,	-0.251504510641098022,	0.142622321844100952,	-0.265881896018981934,	0.155854970216751099,	-0.000413522036978975,	-0.141189351677894592,	-0.177781179547309875,	-0.211936682462692261,	0.005340574774891138,	-0.006396236363798380,	-0.162979915738105774,	0.177793294191360474,	-0.156991899013519287,	-0.128149285912513733,	0.127439156174659729,	0.224965423345565796,	0.252972960472106934,	-0.175435557961463928,	-0.230565726757049561,	-0.245427384972572327,	-0.026759227737784386,	0.034364432096481323,	-0.010549314320087433,	0.155832678079605103,	-0.015232133679091930,	0.029676808044314384,	0.156514316797256470,	-0.040612112730741501,	0.050063505768775940,	-0.230000406503677368,	-0.153065845370292664,	0.160868793725967407,	0.222104072570800781,	0.038072913885116577,	0.008389343507587910,	0.263166487216949463,	-0.162344962358474731,	-0.239386513829231262,	0.036237116903066635,	0.087131418287754059,	0.029408574104309082,	0.224802643060684204,	-0.224328801035881042,	-0.079606786370277405,	-0.110837556421756744,	-0.186626315116882324,	0.122557885944843292,	0.009312855079770088,	0.154047012329101562,	-0.235252663493156433,	-0.056147482246160507,	0.025170158594846725,	0.063551113009452820,	0.093663662672042847,	0.004480895586311817,	-0.156009197235107422,	0.040619105100631714,	0.233506917953491211,	-0.271989494562149048,	-0.246128514409065247,	-0.269772112369537354,	-0.048308320343494415,	0.17452743649482727},
++    {-0.209806069731712341,	-0.260408133268356323,	-0.088305242359638214,	0.061806224286556244,	-0.276704758405685425,	-0.179827764630317688,	-0.203665450215339661,	0.165965646505355835,	0.220674216747283936,	-0.030514201149344444,	-0.007419084664434195,	-0.003443998517468572,	0.089054614305496216,	0.041753694415092468,	-0.100211389362812042,	-0.189107239246368408,	0.140754565596580505,	0.123957887291908264,	-0.122080110013484955,	-0.222813129425048828,	-0.008467647247016430,	0.206962659955024719,	0.030718950554728508,	0.208545520901679993,	-0.172196716070175171,	0.152638360857963562,	0.079840473830699921,	-0.152565792202949524,	0.029669947922229767,	-0.249588042497634888,	-0.156481787562370300,	0.254041820764541626,	0.193185701966285706,	0.038588292896747589,	-0.003656760556623340,	-0.021964225918054581,	-0.230711385607719421,	-0.066065758466720581,	-0.067760668694972992,	-0.059218570590019226,	-0.219263553619384766,	-0.223476737737655640,	0.105077914893627167,	-0.212173879146575928,	0.194772481918334961,	0.011875624768435955,	0.090079568326473236,	0.223040923476219177,	-0.215665400028228760,	-0.256583362817764282,	0.009453701786696911,	-0.003591739805415273,	0.196447387337684631,	0.147340193390846252,	-0.268797814846038818,	0.123279891908168793,	0.185241356492042542,	0.223584696650505066,	0.137502461671829224,	0.225677996873855591,	-0.135814145207405090,	0.079179465770721436,	-0.038258012384176254,	0.04776647686958313},
++    {-0.276997864246368408,	0.240140452980995178,	-0.622145771980285645,	-0.500034689903259277,	0.248095318675041199,	-0.763380944728851318,	-0.216402545571327209,	-0.839881360530853271,	-1.769502282142639160,	0.479036122560501099,	1.053417325019836426,	1.099051713943481445,	-0.151028573513031006,	0.517225623130798340,	-0.128764152526855469,	0.494243472814559937,	0.456779658794403076,	-0.003931832965463400,	-0.096651338040828705,	-0.156583577394485474,	0.201340943574905396,	0.099327109754085541,	-0.239696189761161804,	-0.552034199237823486,	0.884869515895843506,	-0.373417824506759644,	-0.267313271760940552,	0.337988942861557007,	0.812020123004913330,	0.571524500846862793,	0.555744946002960205,	0.479182541370391846,	1.340663194656372070,	-0.146628320217132568,	-0.093981102108955383,	0.050929654389619827,	-0.040029559284448624,	1.042097926139831543,	0.269809573888778687,	-0.179942801594734192,	0.230200469493865967,	-0.685697972774505615,	0.512464344501495361,	0.106083527207374573,	0.323348224163055420,	1.214206576347351074,	0.512055695056915283,	-0.138298988342285156,	0.296932339668273926,	-0.306513428688049316,	0.032591607421636581,	0.949494302272796631,	0.457357853651046753,	-0.331614166498184204,	-0.450702607631683350,	0.569900870323181152,	1.553918480873107910,	0.225360602140426636,	-0.235085055232048035,	-0.217418447136878967,	0.180060774087905884,	0.092736952006816864,	-0.118290156126022339,	0.43572720885276794},
++    {0.310762077569961548,	-0.200435653328895569,	0.408118844032287598,	0.322880893945693970,	-0.124471537768840790,	0.682815134525299072,	0.213352918624877930,	0.410824269056320190,	1.477666258811950684,	-0.082987502217292786,	0.592912673950195312,	-0.363608926534652710,	0.137875720858573914,	0.087245769798755646,	0.350400745868682861,	-0.037104051560163498,	0.140600785613059998,	0.175924897193908691,	0.088121622800827026,	0.388444036245346069,	-0.026003446429967880,	0.060751378536224365,	0.179674714803695679,	0.751413047313690186,	-0.332697421312332153,	0.457266181707382202,	0.257518231868743896,	-0.086748190224170685,	-0.412444293498992920,	-0.213606387376785278,	-0.079026117920875549,	0.227103739976882935,	-0.450608044862747192,	-0.065191991627216339,	-0.200907111167907715,	0.368309587240219116,	0.354505002498626709,	-0.450860977172851562,	-0.159265875816345215,	0.088369302451610565,	0.083309985697269440,	0.902946949005126953,	-0.220216140151023865,	0.278719127178192139,	0.112707726657390594,	-0.383382409811019897,	0.236537694931030273,	0.195081010460853577,	0.352316647768020630,	0.152305155992507935,	0.167940378189086914,	-0.065867282450199127,	0.176136091351509094,	0.412097692489624023,	0.466837257146835327,	0.284397691488265991,	-0.377069592475891113,	-0.213571727275848389,	0.210288614034652710,	-0.115029476583003998,	0.260023504495620728,	0.021161928772926331,	0.382553249597549438,	0.14663971960544586},
++    {-0.589448273181915283,	0.133911967277526855,	-0.790514111518859863,	-0.440220415592193604,	-0.083997540175914764,	-0.586874604225158691,	0.101873695850372314,	-0.464858353137969971,	-1.902804255485534668,	0.832875370979309082,	0.491786181926727295,	1.207909464836120605,	-0.229914709925651550,	0.348653465509414673,	-0.390185266733169556,	0.534023463726043701,	0.410558670759201050,	0.010093983262777328,	0.102733686566352844,	-0.265596091747283936,	0.212209403514862061,	0.032245181500911713,	-0.263168454170227051,	-0.740243911743164062,	1.216275095939636230,	-0.427372366189956665,	-0.004130234941840172,	0.276882171630859375,	0.696771681308746338,	0.424434721469879150,	0.406669497489929199,	0.568324029445648193,	1.017342805862426758,	-0.033995307981967926,	0.069346047937870026,	0.102008000016212463,	0.178289636969566345,	1.226182818412780762,	0.357763260602951050,	-0.025037841871380806,	0.099366456270217896,	-0.221199437975883484,	0.541416347026824951,	0.268239349126815796,	0.359477400779724121,	0.914283812046051025,	0.487471818923950195,	-0.498816788196563721,	0.329291522502899170,	-0.374322116374969482,	-0.072472065687179565,	1.197010278701782227,	0.254716604948043823,	-0.237620607018470764,	-0.475258529186248779,	0.211087062954902649,	1.006703615188598633,	-0.037639647722244263,	-0.125432759523391724,	0.109530843794345856,	0.052932042628526688,	0.200008392333984375,	-0.110492713749408722,	0.47041648626327514},
++    {-0.239260926842689514,	-0.252868622541427612,	-0.124655611813068390,	-0.234418839216232300,	0.195059046149253845,	0.249886542558670044,	-0.024809306487441063,	-0.259006232023239136,	-0.071073427796363831,	-0.235233917832374573,	-0.179848536849021912,	-0.042152982205152512,	-0.195634678006172180,	0.186774298548698425,	0.004583472851663828,	-0.176079183816909790,	-0.130772009491920471,	-0.028273392468690872,	0.045822199434041977,	-0.007393595762550831,	0.142251104116439819,	-0.245579302310943604,	0.079506270587444305,	-0.125499799847602844,	0.199266895651817322,	-0.193377718329429626,	-0.242686897516250610,	-0.153995141386985779,	0.039187263697385788,	-0.216690316796302795,	0.123937770724296570,	0.205083802342414856,	0.037490841001272202,	-0.057153332978487015,	-0.022132256999611855,	-0.013126481324434280,	-0.062889441847801208,	-0.109830074012279510,	-0.169622600078582764,	-0.010254016146063805,	-0.005393351893872023,	0.201124832034111023,	0.207002237439155579,	-0.121223241090774536,	0.219279959797859192,	-0.038252104073762894,	0.132861167192459106,	-0.180164247751235962,	-0.088940873742103577,	0.195199832320213318,	0.004836582113057375,	0.080023206770420074,	0.084817476570606232,	0.259051740169525146,	-0.008903698064386845,	0.004231478087604046,	-0.054235588759183884,	-0.121943369507789612,	-0.117748975753784180,	0.198046833276748657,	-0.210176035761833191,	-0.021545313298702240,	0.168694540858268738,	-0.23664560914039611},
++    {0.361048370599746704,	0.110711276531219482,	0.073228664696216583,	0.389607429504394531,	-0.025150289759039879,	0.362737059593200684,	0.162877619266510010,	-0.117493100464344025,	-0.021978085860610008,	-0.153697773814201355,	-0.837417125701904297,	-0.587055146694183350,	0.223541557788848877,	0.074136197566986084,	0.093941181898117065,	0.174215957522392273,	0.172997370362281799,	0.003056465415284038,	0.015409800224006176,	0.344430416822433472,	0.296111702919006348,	0.248019024729728699,	-0.256096988916397095,	0.278376221656799316,	-0.072195932269096375,	0.108676716685295105,	0.259717017412185669,	0.215652883052825928,	0.160618916153907776,	0.076539233326911926,	-0.254357963800430298,	-0.043059818446636200,	0.014643535017967224,	0.004181948024779558,	0.227092146873474121,	-0.017932740971446037,	0.319901108741760254,	-0.276148319244384766,	0.163887500762939453,	0.338175535202026367,	-0.043680910021066666,	-0.002868927316740155,	0.048283167183399200,	0.026403289288282394,	0.185708671808242798,	-0.063465766608715057,	-0.230633705854415894,	-0.326136201620101929,	-0.392087638378143311,	-0.026054913178086281,	-0.075515896081924438,	-0.220360308885574341,	-0.120335064828395844,	-0.073712199926376343,	0.266292124986648560,	-0.254122078418731689,	-0.718785524368286133,	0.222956627607345581,	-0.026234712451696396,	-0.157049775123596191,	0.201187163591384888,	0.040083624422550201,	-0.052888367325067520,	0.19308334589004516},
++    {0.320226579904556274,	0.282792210578918457,	0.974307835102081299,	0.255244702100753784,	0.256955236196517944,	0.923511087894439697,	0.219902336597442627,	0.903337597846984863,	1.383788824081420898,	0.026027550920844078,	0.374283194541931152,	-0.280159056186676025,	0.721204042434692383,	0.180128321051597595,	0.290865927934646606,	-0.194010883569717407,	0.194214284420013428,	0.175704047083854675,	0.142924219369888306,	0.204970300197601318,	0.043033055961132050,	0.398602575063705444,	-0.156954318284988403,	0.552959024906158447,	-0.508550763130187988,	0.245675235986709595,	0.393572807312011719,	0.312675476074218750,	-0.315718054771423340,	-0.052426036447286606,	-0.071148671209812164,	-0.043450631201267242,	-0.510809779167175293,	0.238779619336128235,	0.179771393537521362,	0.386990606784820557,	0.395780324935913086,	-0.371200293302536011,	-0.153446078300476074,	0.331105560064315796,	0.199073746800422668,	0.632133543491363525,	-0.001669985125772655,	0.277852803468704224,	0.019549284130334854,	-0.399718075990676880,	0.070494905114173889,	0.373606294393539429,	0.134082958102226257,	0.111958533525466919,	0.280730307102203369,	-0.055285096168518066,	-0.201237082481384277,	0.263884723186492920,	0.361673980951309204,	-0.116156995296478271,	-0.084187291562557220,	0.256163328886032104,	0.211365133523941040,	0.377772063016891479,	-0.078842446208000183,	0.141806304454803467,	0.327390462160110474,	-0.06769111752510070},
++  };
++
++  double b_att_x[16] =
++  { -0.000310469273244962,	0.000000000000000000,	0.295716404914855957,	0.207608714699745178,	-0.000937768316362053,	0.000463264412246644,	0.001152707147412002,	0.061044316738843918,	-0.001157779130153358,	-0.014099088497459888,	0.241958364844322205,	0.047625865787267685,	0.255054473876953125,	-0.001935814623720944,	0.020319694653153419,	0.07549492269754409 };
++
++  double w_att_x1[3][64] =
++  {
++    {0.210736930370330811,	0.089739091694355011,	-0.524452090263366699,	0.039106126874685287,	0.075994364917278290,	-0.757608294486999512,	-0.253427118062973022,	-0.493742585182189941,	0.802965164184570312,	-0.185220092535018921,	0.393284142017364502,	-0.416900366544723511,	-0.350514441728591919,	-0.018564894795417786,	0.225072294473648071,	0.257522732019424438,	0.042164679616689682,	0.323550134897232056,	0.060612574219703674,	0.043489344418048859,	-0.037032034248113632,	-0.257559508085250854,	-0.295399934053421021,	-0.625349700450897217,	-0.038062885403633118,	0.299923181533813477,	0.088465929031372070,	0.200610816478729248,	-0.189661115407943726,	0.089900784194469452,	0.123393639922142029,	0.190927758812904358,	-0.355026930570602417,	-0.159625872969627380,	-0.081151433289051056,	-0.290662407875061035,	0.025080913677811623,	-0.200784087181091309,	0.214136928319931030,	0.253995895385742188,	0.089638404548168182,	0.427917301654815674,	-0.175685465335845947,	0.286707699298858643,	0.048603031784296036,	-0.565454602241516113,	0.170643076300621033,	-0.074287034571170807,	0.267686426639556885,	0.169441312551498413,	-0.042101424187421799,	-0.425038278102874756,	-0.133572220802307129,	0.229107186198234558,	-0.066618658602237701,	0.303450763225555420,	-0.598878264427185059,	-0.083906151354312897,	-0.176340654492378235,	-0.103070460259914398,	0.294441521167755127,	0.125924631953239441,	-0.002059943275526166,	0.25471860170364379},
++    {0.159411475062370300,	-0.247028946876525879,	0.112606853246688843,	-0.031877379864454269,	-0.211251422762870789,	0.039674241095781326,	0.000832031655590981,	-0.149096891283988953,	-0.097687669098377228,	-0.043233543634414673,	-0.195763707160949707,	-0.283874869346618652,	-0.077885411679744720,	-0.117423057556152344,	-0.241714268922805786,	0.000469588907435536,	0.021559540182352066,	-0.112250246107578278,	0.285420477390289307,	-0.219930246472358704,	-0.236664861440658569,	-0.190765276551246643,	0.241772934794425964,	-0.283843308687210083,	0.230534568428993225,	0.287352919578552246,	0.271301031112670898,	-0.086357548832893372,	0.169824033975601196,	-0.128643408417701721,	-0.009807539172470570,	-0.048925746232271194,	-0.194004133343696594,	0.067177109420299530,	-0.161146089434623718,	-0.023624034598469734,	-0.029952464625239372,	-0.149674639105796814,	0.298897027969360352,	-0.126935675740242004,	-0.013555960729718208,	-0.100069686770439148,	-0.240400731563568115,	0.159734606742858887,	-0.082703128457069397,	-0.099254019558429718,	-0.110821641981601715,	0.162143766880035400,	-0.170594364404678345,	-0.278784990310668945,	-0.071487233042716980,	-0.101472303271293640,	0.200270250439643860,	-0.018315076828002930,	-0.293392390012741089,	-0.008090389892458916,	-0.151506334543228149,	0.226307660341262817,	-0.256225794553756714,	-0.070240676403045654,	0.154504165053367615,	0.092195689678192139,	0.034448098391294479,	-0.01639212854206562},
++    {-0.296090960502624512,	0.301661640405654907,	-0.475142329931259155,	-0.193150043487548828,	0.047909289598464966,	-0.262762457132339478,	0.134005740284919739,	-0.357868582010269165,	0.769347786903381348,	0.554605007171630859,	0.047536481171846390,	-0.714337348937988281,	0.176239088177680969,	0.215706735849380493,	-0.202268078923225403,	0.095481514930725098,	0.125880107283592224,	0.050838273018598557,	0.092833198606967926,	-0.245337307453155518,	-0.398628890514373779,	-0.014365723356604576,	-0.263725936412811279,	0.005801332648843527,	-0.528654277324676514,	-0.210606709122657776,	0.078362889587879181,	-0.021410878747701645,	-0.224070504307746887,	0.273310512304306030,	0.076442562043666840,	0.279331445693969727,	0.227086231112480164,	-0.265402019023895264,	0.119905032217502594,	-0.096044160425662994,	0.043166629970073700,	-0.537066519260406494,	0.049325630068778992,	-0.090114817023277283,	0.242736518383026123,	0.461001157760620117,	-0.363007754087448120,	-0.181542336940765381,	0.129243254661560059,	-0.004717663396149874,	0.061243690550327301,	0.248969152569770813,	-0.083881877362728119,	-0.259688973426818848,	0.286088526248931885,	-0.411851614713668823,	-0.151898145675659180,	0.195001199841499329,	-0.126791611313819885,	-0.127617120742797852,	-0.488989979028701782,	-0.138314098119735718,	-0.122175142168998718,	0.232472971081733704,	0.050800900906324387,	0.311650246381759644,	-0.152576193213462830,	0.24854013323783874},
++  };
++
++  double b_att_x1[3] =
++  { 0.049891069531440735,	0.000555374543182552,	0.04610604792833328 };
++
++
++  double w_out[2][28] =
++  {
++    {0.052950471963629980,	0.204269677131633576,	0.054083248566451386,	0.211193526026252520,	0.847614110299094392,	0.203249081682214450,	0.061490883580636924,	0.202994042537811170,	0.046009393659545372,	-0.250146643948896352,	-0.052850534003398064,	0.391627413349373343,	0.143977512823724701,	0.141863610808207918,	-0.133855993060623346,	-0.351367134729391406,	0.118809653624359357,	-0.238032764869038127,	-0.037399621737107758,	-0.238448969892421564,	-0.045568011465849212,	-0.240364299267421533,	-1.131716465613776368,	-0.228769003304201135,	-0.055714874227781069,	-0.240633710200145179,	-0.036277665788824132,	0.26894030018563641},
++    {-0.089441194434872501,	-0.388231619527893979,	-0.095980342793239054,	-0.404253202227543462,	-1.549794082362396352,	-0.387717526391069323,	-0.106545267573398925,	-0.387756603779610742,	-0.078781395893739864,	-0.132454998136292357,	0.423451327458809312,	-0.290232056443981756,	-0.353660588666291076,	-0.216066972495871035,	0.594439181465267863,	0.446629358887349559,	0.072592913274626969,	0.307337229781164845,	0.005461497130367338,	0.040406925778729730,	0.006074466588924216,	0.041572821108406877,	0.174014133883660271,	0.032862213965169529,	0.009339708539496783,	0.038101570367090054,	0.007381076170227874,	0.32447167008117827},
++  };
++
++  double b_out[2] =
++  { 0.231624916195869446,	0.17597649991512298 };
++
++
++#endif
++
++  private:
++
++    static_vector<double, NN_MAX_BOUNDARY_SIZE> m_refSamplesY;
++    static_vector<double, NN_MAX_BOUNDARY_SIZE> m_refSamplesCb;
++    static_vector<double, NN_MAX_BOUNDARY_SIZE> m_refSamplesCr;
++    static_vector<double, NN_MAX_OUTPUT_SAMPLES> m_collocatedSamplesY;
++
++    static_vector<double, NN_MAX_BOUNDARY_SIZE * NN_MAX_CHANNEL_SIZE> m_boundary1Pred;
++    static_vector<double, NN_MAX_OUTPUT_SAMPLES> m_padCollocatedSamplesY;
++    static_vector<double, NN_MAX_OUTPUT_SAMPLES * NN_MAX_CHANNEL_SIZE> m_inputPatchesY;
++    static_vector<double, NN_MAX_OUTPUT_SAMPLES * NN_MAX_CHANNEL_SIZE> m_padAttPred;
++
++    static_vector<double, NN_MAX_BOUNDARY_SIZE * NN_MAX_CHANNEL_SIZE> m_attbPred;
++    static_vector<double, NN_MAX_BOUNDARY_SIZE * NN_MAX_CHANNEL_SIZE> m_attxPred;
++    static_vector<double, NN_MAX_OUTPUT_SAMPLES * NN_MAX_CHANNEL_SIZE> m_attx1Pred;
++    static_vector<double, NN_MAX_OUTPUT_SAMPLES> m_attSoftmax;
++    static_vector<double, NN_MAX_BOUNDARY_SIZE * NN_MAX_OUTPUT_SAMPLES> m_preAttMap;
++    static_vector<double, NN_MAX_BOUNDARY_SIZE * NN_MAX_OUTPUT_SAMPLES> m_attMap;
++
++    Size m_blockSize;
++
++    Size m_bound1Size;
++    Size m_bound2Size;
++    Size m_lumaSize;
++    Size m_attbSize;
++    Size m_attxSize;
++    Size m_attx1Size;
++    Size m_attMapSize;
++
++    void initPredBlockParams(const Size& block);
++};
+diff --git a/source/Lib/CommonLib/TypeDef.h b/source/Lib/CommonLib/TypeDef.h
+index 1363c31..c5ba6bb 100644
+--- a/source/Lib/CommonLib/TypeDef.h
++++ b/source/Lib/CommonLib/TypeDef.h
+@@ -50,6 +50,12 @@
+ #include <assert.h>
+ #include <cassert>
+ 
++#define NN_CHROMA_PRED                                    1 // NN Intra Chroma Prediction
++#if NN_CHROMA_PRED
++#define NN_CHROMA_PRED_SIGNAL                             1 // NN Intra Chroma Prediction
++#define NN_CHROMA_PRED_SIGNAL_SEPARATE                    1
++#define NN_CHROMA_PRED_SIGNAL_REPLACE_TL                  0
++#endif
+ #define RETRAIN_CABAC                                     1 // Retrained CABAC probabilities
+ 
+ #define JVET_P01034_PRED_1D_SCALING_LIST                  1 // JVET-P1034: 1D Scaling list index and add predictor mode
+diff --git a/source/Lib/CommonLib/UnitTools.cpp b/source/Lib/CommonLib/UnitTools.cpp
+index 2e198dc..b7d6f32 100644
+--- a/source/Lib/CommonLib/UnitTools.cpp
++++ b/source/Lib/CommonLib/UnitTools.cpp
+@@ -550,7 +550,12 @@ void PU::getIntraChromaCandModes( const PredictionUnit &pu, unsigned modeList[NU
+     modeList[4] = LM_CHROMA_IDX;
+     modeList[5] = MDLM_L_IDX;
+     modeList[6] = MDLM_T_IDX;
++#if NN_CHROMA_PRED_SIGNAL
++    modeList[7] = LM_CHROMA_NN;
++    modeList[8] = DM_CHROMA_IDX;
++#else
+     modeList[7] = DM_CHROMA_IDX;
++#endif
+ 
+     const uint32_t lumaMode = getCoLocatedIntraLumaMode(pu);
+     for( int i = 0; i < 4; i++ )
+@@ -564,9 +569,27 @@ void PU::getIntraChromaCandModes( const PredictionUnit &pu, unsigned modeList[NU
+   }
+ }
+ 
++#if NN_CHROMA_PRED_SIGNAL
++bool PU::isLMCNNenabled(const PredictionUnit &pu)
++{
++  CompArea areaCb = pu.Cb();
++  bool lmChromaNnEnabled = true;
++  if (!((areaCb.width == 4 && areaCb.height == 4) || (areaCb.width == 8 && areaCb.height == 8) || (areaCb.width == 16 && areaCb.height == 16)))
++  {
++    lmChromaNnEnabled = false;
++  }
++
++  return lmChromaNnEnabled;
++}
++#endif
++
+ bool PU::isLMCMode(unsigned mode)
+ {
++#if NN_CHROMA_PRED_SIGNAL
++  return (mode >= LM_CHROMA_IDX && mode <= LM_CHROMA_NN);
++#else
+   return (mode >= LM_CHROMA_IDX && mode <= MDLM_T_IDX);
++#endif
+ }
+ 
+ bool PU::isLMCModeEnabled(const PredictionUnit &pu, unsigned mode)
+@@ -583,6 +606,9 @@ int PU::getLMSymbolList(const PredictionUnit &pu, int *modeList)
+   int idx = 0;
+ 
+   modeList[idx++] = LM_CHROMA_IDX;
++#if NN_CHROMA_PRED_SIGNAL
++  modeList[idx++] = LM_CHROMA_NN;
++#endif
+   modeList[idx++] = MDLM_L_IDX;
+   modeList[idx++] = MDLM_T_IDX;
+   return idx;
+diff --git a/source/Lib/CommonLib/UnitTools.h b/source/Lib/CommonLib/UnitTools.h
+index c40064f..9a2209b 100644
+--- a/source/Lib/CommonLib/UnitTools.h
++++ b/source/Lib/CommonLib/UnitTools.h
+@@ -185,6 +185,9 @@ namespace PU
+ 
+   bool isLMCMode                      (                          unsigned mode);
+   bool isLMCModeEnabled               (const PredictionUnit &pu, unsigned mode);
++#if NN_CHROMA_PRED_SIGNAL
++  bool isLMCNNenabled(const PredictionUnit &pu);
++#endif
+   bool isChromaIntraModeCrossCheckMode(const PredictionUnit &pu);
+   void getTriangleMergeCandidates     (const PredictionUnit &pu, MergeCtx &triangleMrgCtx);
+   void spanTriangleMotionInfo         (      PredictionUnit &pu, MergeCtx &triangleMrgCtx, const bool splitDir, const uint8_t candIdx0, const uint8_t candIdx1);
+diff --git a/source/Lib/DecoderLib/CABACReader.cpp b/source/Lib/DecoderLib/CABACReader.cpp
+index 0f7937f..0ffeda3 100644
+--- a/source/Lib/DecoderLib/CABACReader.cpp
++++ b/source/Lib/DecoderLib/CABACReader.cpp
+@@ -1478,6 +1478,24 @@ bool CABACReader::intra_chroma_lmc_mode(PredictionUnit& pu)
+   int lmModeList[10];
+   PU::getLMSymbolList(pu, lmModeList);
+ 
++#if NN_CHROMA_PRED_SIGNAL
++  bool lmChromaNnEnabled = PU::isLMCNNenabled(pu);
++#if NN_CHROMA_PRED_SIGNAL_SEPARATE
++  lmChromaNnEnabled = false;
++#endif
++
++  if (lmChromaNnEnabled)
++  {
++#if NN_CHROMA_PRED_SIGNAL_REPLACE_TL
++    int symbol = m_BinDecoder.decodeBin(Ctx::CclmModeIdx(0)) ? 1 : 0;
++#else
++    int symbol = m_BinDecoder.decodeBin(Ctx::CclmModeIdx(0)) ? 2 : 0;
++    symbol += m_BinDecoder.decodeBinEP();
++#endif
++    pu.intraDir[1] = lmModeList[symbol];
++    return true;
++  }
++#endif
+ #if JVET_P0615_CHROMAMODE_CLEANUP
+   int symbol = m_BinDecoder.decodeBin(Ctx::CclmModeIdx(0));
+ #else
+@@ -1491,8 +1509,30 @@ bool CABACReader::intra_chroma_lmc_mode(PredictionUnit& pu)
+   }
+   else
+   {
++#if NN_CHROMA_PRED_SIGNAL
++    if (lmChromaNnEnabled)
++    {
++      symbol += m_BinDecoder.decodeBinEP();
++      if (symbol == 1)
++      {
++        pu.intraDir[1] = lmModeList[symbol];
++      }
++      else
++      {
++        symbol += m_BinDecoder.decodeBinEP();
++        pu.intraDir[1] = lmModeList[symbol];
++      }
++    }
++    else
++    {
++      symbol += m_BinDecoder.decodeBinEP();
++      symbol++;
++      pu.intraDir[1] = lmModeList[symbol];
++    }
++#else
+     symbol += m_BinDecoder.decodeBinEP();
+     pu.intraDir[1] = lmModeList[symbol];
++#endif
+   }
+   return true; //it will only enter this function for LMC modes, so always return true ;
+ }
+@@ -1512,6 +1552,17 @@ void CABACReader::intra_chroma_pred_mode(PredictionUnit& pu)
+   }
+ #endif
+ 
++#if NN_CHROMA_PRED_SIGNAL_SEPARATE
++  if (PU::isLMCNNenabled(pu) && pu.cu->checkCCLMAllowed())
++  {
++    bool isLMCNnMode = m_BinDecoder.decodeBin(Ctx::CclmNnModeFlag(0)) ? true : false;
++    if (isLMCNnMode)
++    {
++      pu.intraDir[1] = LM_CHROMA_NN;//intra_chroma_lmc_mode(pu);
++      return;
++    }
++  }
++#endif
+   if (pu.cs->sps->getUseLMChroma() && pu.cu->checkCCLMAllowed())
+   {
+     bool isLMCMode = m_BinDecoder.decodeBin(Ctx::CclmModeFlag(0)) ? true : false;
+diff --git a/source/Lib/DecoderLib/DecCu.cpp b/source/Lib/DecoderLib/DecCu.cpp
+index f56cb73..2f8e1db 100644
+--- a/source/Lib/DecoderLib/DecCu.cpp
++++ b/source/Lib/DecoderLib/DecCu.cpp
+@@ -235,7 +235,25 @@ void DecCu::xIntraRecBlk( TransformUnit& tu, const ComponentID compID )
+   {
+     const PredictionUnit& pu = *tu.cu->firstPU;
+     m_pcIntraPred->xGetLumaRecPixels( pu, area );
+-    m_pcIntraPred->predIntraChromaLM( compID, piPred, pu, area, uiChFinalMode );
++#if NN_CHROMA_PRED
++    // Apply NN Intra Chroma prediction only for 8x8 blocks
++#if NN_CHROMA_PRED_SIGNAL
++    if (uiChFinalMode == LM_CHROMA_NN)
++#else
++    if (((area.width == 4 && area.height == 4) || (area.width == 8 && area.height == 8) || (area.width == 16 && area.height == 16)) && uiChFinalMode == LM_CHROMA_IDX)
++#endif
++    {
++      m_pcIntraPred->initIntraPatternChType(*tu.cu, tu.blocks[COMPONENT_Cr]);
++      m_pcIntraPred->initNNIntraChroma(pu, area);
++      m_pcIntraPred->predIntraNN(piPred, piPred, pu, compID, pu.cs->slice->clpRng(compID));
++    }
++    else
++    {
++      m_pcIntraPred->predIntraChromaLM(compID, piPred, pu, area, uiChFinalMode);
++    }
++#else
++    m_pcIntraPred->predIntraChromaLM(compID, piPred, pu, area, uiChFinalMode);
++#endif
+   }
+   else
+   {
+diff --git a/source/Lib/EncoderLib/CABACWriter.cpp b/source/Lib/EncoderLib/CABACWriter.cpp
+index 7c33444..1e0d0de 100644
+--- a/source/Lib/EncoderLib/CABACWriter.cpp
++++ b/source/Lib/EncoderLib/CABACWriter.cpp
+@@ -1222,6 +1222,26 @@ void CABACWriter::intra_chroma_lmc_mode(const PredictionUnit& pu)
+       break;
+     }
+   }
++#if NN_CHROMA_PRED_SIGNAL
++  bool lmChromaNnEnabled = PU::isLMCNNenabled(pu);
++#if NN_CHROMA_PRED_SIGNAL_SEPARATE
++  lmChromaNnEnabled = false;
++#endif
++  //we need to get our size. if it is not allowed to do LM NN, we do:
++  if(!lmChromaNnEnabled)
++    symbol = symbol? symbol - 1 : symbol;
++  else
++  {
++#if NN_CHROMA_PRED_SIGNAL_REPLACE_TL
++    m_BinEncoder.encodeBin(symbol == 0 ? 0 : 1, Ctx::CclmModeIdx(0));
++#else
++    m_BinEncoder.encodeBin(symbol <= 1 ? 0 : 1, Ctx::CclmModeIdx(0));
++    unsigned int second_bin = (symbol == 1 || symbol == 3);
++    m_BinEncoder.encodeBinEP(second_bin);
++#endif
++    return;
++  }
++#endif
+   CHECK(symbol < 0, "invalid symbol found");
+ 
+ #if JVET_P0615_CHROMAMODE_CLEANUP
+@@ -1232,9 +1252,29 @@ void CABACWriter::intra_chroma_lmc_mode(const PredictionUnit& pu)
+ 
+   if (symbol > 0)
+   {
++#if NN_CHROMA_PRED_SIGNAL
++    if (lmChromaNnEnabled)
++    {
++      CHECK(symbol > 3, "invalid symbol for MMLM");
++      unsigned int symbol_minus_1 = symbol - 1;
++      m_BinEncoder.encodeBinEP(symbol_minus_1);
++      if (symbol_minus_1)
++      {
++        unsigned int symbol_minus_2 = symbol - 2;
++        m_BinEncoder.encodeBinEP(symbol_minus_2);
++      }
++    }
++    else
++    {
++      CHECK(symbol > 2, "invalid symbol for MMLM");
++      unsigned int symbol_minus_1 = symbol - 1;
++      m_BinEncoder.encodeBinEP(symbol_minus_1);
++    }
++#else
+     CHECK(symbol > 2, "invalid symbol for MMLM");
+     unsigned int symbol_minus_1 = symbol - 1;
+     m_BinEncoder.encodeBinEP(symbol_minus_1);
++#endif
+   }
+ }
+ 
+@@ -1249,10 +1289,27 @@ void CABACWriter::intra_chroma_pred_mode(const PredictionUnit& pu)
+ #endif
+ 
+   const unsigned intraDir = pu.intraDir[1];
++#if NN_CHROMA_PRED_SIGNAL_SEPARATE
++  if (PU::isLMCNNenabled(pu) && pu.cu->checkCCLMAllowed())
++  {
++    bool isLMCNnMode = (pu.intraDir[1] == LM_CHROMA_NN);
++    m_BinEncoder.encodeBin(isLMCNnMode ? 1 : 0, Ctx::CclmNnModeFlag(0));
++    if (isLMCNnMode)
++    {
++      return;
++    }
++  }
++#endif
+   if (pu.cs->sps->getUseLMChroma() && pu.cu->checkCCLMAllowed())
+   {
++#if NN_CHROMA_PRED_SIGNAL_SEPARATE
++    bool isCCLM = PU::isLMCMode(intraDir) && !(pu.intraDir[1] == LM_CHROMA_NN);
++    m_BinEncoder.encodeBin(isCCLM ? 1 : 0, Ctx::CclmModeFlag(0));
++    if (isCCLM)
++#else
+     m_BinEncoder.encodeBin(PU::isLMCMode(intraDir) ? 1 : 0, Ctx::CclmModeFlag(0));
+     if (PU::isLMCMode(intraDir))
++#endif
+     {
+       intra_chroma_lmc_mode(pu);
+       return;
+diff --git a/source/Lib/EncoderLib/EncModeCtrl.cpp b/source/Lib/EncoderLib/EncModeCtrl.cpp
+index 56da31c..cc87786 100644
+--- a/source/Lib/EncoderLib/EncModeCtrl.cpp
++++ b/source/Lib/EncoderLib/EncModeCtrl.cpp
+@@ -1452,6 +1452,23 @@ bool EncModeCtrlMTnoRQT::tryMode( const EncTestMode& encTestmode, const CodingSt
+     return false;
+   }
+ 
++
++  
++  // Modification: Only square CUs
++  if (partitioner.currArea().lumaSize().width != partitioner.currArea().lumaSize().height)
++  {
++    return false;
++  }
++
++  // Modification: Only square CUs
++  if (partitioner.currArea().lumaSize().width > 32 && partitioner.currArea().lumaSize().height > 32)
++  {
++    return encTestmode.type == ETM_SPLIT_QT;
++  }
++    
++
++  
++
+   const PartSplit implicitSplit = partitioner.getImplicitSplit( cs );
+   const bool isBoundary         = implicitSplit != CU_DONT_SPLIT;
+ 
+diff --git a/source/Lib/EncoderLib/IntraSearch.cpp b/source/Lib/EncoderLib/IntraSearch.cpp
+index 1169828..7dfb362 100644
+--- a/source/Lib/EncoderLib/IntraSearch.cpp
++++ b/source/Lib/EncoderLib/IntraSearch.cpp
+@@ -1418,10 +1418,22 @@ void IntraSearch::estIntraPredChromaQT( CodingUnit &cu, Partitioner &partitioner
+         {
+           continue;
+         }
++#if NN_CHROMA_PRED_SIGNAL
++        if ((mode == LM_CHROMA_IDX) || (mode == LM_CHROMA_NN) || (mode == PLANAR_IDX) || (mode == DM_CHROMA_IDX)) // only pre-check regular modes and MDLM modes, not including DM ,Planar, and LM
++#else
+         if ((mode == LM_CHROMA_IDX) || (mode == PLANAR_IDX) || (mode == DM_CHROMA_IDX)) // only pre-check regular modes and MDLM modes, not including DM ,Planar, and LM
++#endif
++        {
++          continue;
++        }
++
++#if NN_CHROMA_PRED_SIGNAL_REPLACE_TL
++        if ((mode == MDLM_L_IDX || mode == MDLM_T_IDX) && PU::isLMCNNenabled(pu))
+         {
+           continue;
+         }
++#endif
++
+         pu.intraDir[1] = mode; // temporary assigned, for SATD checking.
+ 
+ #if JVET_P0058_CHROMA_TS_ENCODER_INTRA_SAD_MOD
+@@ -1438,6 +1450,43 @@ void IntraSearch::estIntraPredChromaQT( CodingUnit &cu, Partitioner &partitioner
+         CompArea areaCb = pu.Cb();
+         PelBuf orgCb = cs.getOrgBuf(areaCb);
+         PelBuf predCb = cs.getPredBuf(areaCb);
++
++        CompArea areaCr = pu.Cr();
++        PelBuf orgCr = cs.getOrgBuf(areaCr);
++        PelBuf predCr = cs.getPredBuf(areaCr);
++
++        if (PU::isLMCMode(mode))
++        {
++          
++#if NN_CHROMA_PRED
++          // Apply NN Intra Chroma prediction only for 8x8 blocks
++#if NN_CHROMA_PRED_SIGNAL
++          if (mode == LM_CHROMA_NN)
++#else
++          if (((areaCb.width == 4 && areaCb.height == 4) || (areaCb.width == 8 && areaCb.height == 8) || (areaCb.width == 16 && areaCb.height == 16)) && mode == LM_CHROMA_IDX)
++#endif
++          {
++            initNNIntraChroma(pu, areaCr);
++            predIntraNN(predCb, predCr, pu, COMPONENT_Y, pu.cs->slice->clpRng(COMPONENT_Cb));
++          }
++          else
++          {
++            predIntraChromaLM(COMPONENT_Cb, predCb, pu, areaCb, mode);
++            predIntraChromaLM(COMPONENT_Cr, predCr, pu, areaCr, mode);
++          }
++#else
++          predIntraChromaLM(COMPONENT_Cb, predCb, pu, areaCb, mode);
++          predIntraChromaLM(COMPONENT_Cr, predCr, pu, areaCr, mode);
++#endif
++        }
++        else
++        {
++          initPredIntraParams(pu, pu.Cb(), *pu.cs->sps);
++          predIntraAng(COMPONENT_Cb, predCb, pu);
++          initPredIntraParams(pu, pu.Cr(), *pu.cs->sps);
++          predIntraAng(COMPONENT_Cr, predCr, pu);
++        }
++
+ #if JVET_P0058_CHROMA_TS_ENCODER_INTRA_SAD_MOD
+         m_pcRdCost->setDistParam(distParamSad, orgCb, predCb, pu.cs->sps->getBitDepth(CHANNEL_TYPE_CHROMA), COMPONENT_Cb, false);
+         m_pcRdCost->setDistParam(distParamSatd, orgCb, predCb, pu.cs->sps->getBitDepth(CHANNEL_TYPE_CHROMA), COMPONENT_Cb, true);
+@@ -1450,15 +1499,6 @@ void IntraSearch::estIntraPredChromaQT( CodingUnit &cu, Partitioner &partitioner
+ #else
+         distParam.applyWeight = false;
+ #endif
+-        if (PU::isLMCMode(mode))
+-        {
+-          predIntraChromaLM(COMPONENT_Cb, predCb, pu, areaCb, mode);
+-        }
+-        else
+-        {
+-          initPredIntraParams(pu, pu.Cb(), *pu.cs->sps);
+-          predIntraAng(COMPONENT_Cb, predCb, pu);
+-        }
+ #if JVET_P0058_CHROMA_TS_ENCODER_INTRA_SAD_MOD
+         sadCb = distParamSad.distFunc(distParamSad) * 2;
+         satdCb = distParamSatd.distFunc(distParamSatd);
+@@ -1466,9 +1506,7 @@ void IntraSearch::estIntraPredChromaQT( CodingUnit &cu, Partitioner &partitioner
+ #else
+         sad += distParam.distFunc(distParam);
+ #endif
+-        CompArea areaCr = pu.Cr();
+-        PelBuf orgCr = cs.getOrgBuf(areaCr);
+-        PelBuf predCr = cs.getPredBuf(areaCr);
++
+ #if JVET_P0058_CHROMA_TS_ENCODER_INTRA_SAD_MOD
+         m_pcRdCost->setDistParam(distParamSad, orgCr, predCr, pu.cs->sps->getBitDepth(CHANNEL_TYPE_CHROMA), COMPONENT_Cr, false);
+         m_pcRdCost->setDistParam(distParamSatd, orgCr, predCr, pu.cs->sps->getBitDepth(CHANNEL_TYPE_CHROMA), COMPONENT_Cr, true);
+@@ -1481,15 +1519,6 @@ void IntraSearch::estIntraPredChromaQT( CodingUnit &cu, Partitioner &partitioner
+ #else
+         distParam.applyWeight = false;
+ #endif
+-        if (PU::isLMCMode(mode))
+-        {
+-          predIntraChromaLM(COMPONENT_Cr, predCr, pu, areaCr, mode);
+-        }
+-        else
+-        {
+-          initPredIntraParams(pu, pu.Cr(), *pu.cs->sps);
+-          predIntraAng(COMPONENT_Cr, predCr, pu);
+-        }
+ #if JVET_P0058_CHROMA_TS_ENCODER_INTRA_SAD_MOD
+         sadCr = distParamSad.distFunc(distParamSad) * 2;
+         satdCr = distParamSatd.distFunc(distParamSatd);
+@@ -1559,6 +1588,20 @@ void IntraSearch::estIntraPredChromaQT( CodingUnit &cu, Partitioner &partitioner
+         {
+           continue;
+         }
++#if NN_CHROMA_PRED_SIGNAL
++        if (chromaIntraMode == LM_CHROMA_NN && !PU::isLMCNNenabled(pu))
++        {
++          continue;
++        }
++
++#if NN_CHROMA_PRED_SIGNAL_REPLACE_TL
++        if ((chromaIntraMode == MDLM_L_IDX || chromaIntraMode == MDLM_T_IDX) && PU::isLMCNNenabled(pu))
++        {
++          continue;
++        }
++#endif
++#endif
++
+ #if JVET_P0059_CHROMA_BDPCM
+         }
+ #endif
+@@ -3242,9 +3285,27 @@ void IntraSearch::xIntraCodingTUBlock(TransformUnit &tu, const ComponentID &comp
+ #endif
+     {
+       {
++        initIntraPatternChType(*tu.cu, tu.blocks[COMPONENT_Cr]);
+         xGetLumaRecPixels( pu, area );
+       }
++#if NN_CHROMA_PRED
++      // Apply NN Intra Chroma prediction only for 8x8 blocks
++#if NN_CHROMA_PRED_SIGNAL
++      if(uiChFinalMode == LM_CHROMA_NN)
++#else
++      if (((area.width == 4 && area.height == 4) || (area.width == 8 && area.height == 8) || (area.width == 16 && area.height == 16)) && uiChFinalMode == LM_CHROMA_IDX)
++#endif
++      {
++        initNNIntraChroma(pu, area);
++        predIntraNN(piPred, piPred, pu, compID, pu.cs->slice->clpRng(compID));
++      }
++      else
++      {
++        predIntraChromaLM(compID, piPred, pu, area, uiChFinalMode);
++      }
++#else
+       predIntraChromaLM( compID, piPred, pu, area, uiChFinalMode );
++#endif
+     }
+     else
+     {
+@@ -4312,16 +4373,39 @@ ChromaCbfs IntraSearch::xRecurIntraChromaCodingQT( CodingStructure &cs, Partitio
+ 
+     if( PU::isLMCMode( predMode ) )
+     {
+-      xGetLumaRecPixels( pu, cbArea );
+-      predIntraChromaLM( COMPONENT_Cb, piPredCb, pu, cbArea, predMode );
+-      predIntraChromaLM( COMPONENT_Cr, piPredCr, pu, crArea, predMode );
++      xGetLumaRecPixels(pu, cbArea);
++#if NN_CHROMA_PRED
++      // Apply NN Intra Chroma prediction only for 8x8 blocks
++#if NN_CHROMA_PRED_SIGNAL
++      if (predMode == LM_CHROMA_NN)
++#else
++      if (((cbArea.width == 4 && cbArea.height == 4) || (cbArea.width == 8 && cbArea.height == 8) || (cbArea.width == 16 && cbArea.height == 16)) && predMode == LM_CHROMA_IDX)
++#endif
++      {
++        initNNIntraChroma(pu, crArea);
++        predIntraNN(piPredCb, piPredCr, pu, COMPONENT_Y, pu.cs->slice->clpRng(COMPONENT_Cb));
++      }
++      else
++      {
++        predIntraChromaLM(COMPONENT_Cb, piPredCb, pu, cbArea, predMode);
++        predIntraChromaLM(COMPONENT_Cr, piPredCr, pu, crArea, predMode);
++      }
++    }
++    else
++    {
++      predIntraAng(COMPONENT_Cb, piPredCb, pu);
++      predIntraAng(COMPONENT_Cr, piPredCr, pu);
++    }
++#else
++      predIntraChromaLM(COMPONENT_Cb, piPredCb, pu, cbArea, predMode);
++      predIntraChromaLM(COMPONENT_Cr, piPredCr, pu, crArea, predMode);
+     }
+     else
+     {
+-      predIntraAng( COMPONENT_Cb, piPredCb, pu);
+-      predIntraAng( COMPONENT_Cr, piPredCr, pu);
++      predIntraAng(COMPONENT_Cb, piPredCb, pu);
++      predIntraAng(COMPONENT_Cr, piPredCr, pu);
+     }
+-
++#endif
+     // determination of chroma residuals including reshaping and cross-component prediction
+     //----- get chroma residuals -----
+     PelBuf resiCb  = cs.getResiBuf(cbArea);
