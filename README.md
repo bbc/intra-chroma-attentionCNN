@@ -98,7 +98,7 @@ python train.py -c [path/to/cf_file].py -g [gpu number]
 
 ### Deploy a model scheme
 
-In order to integrate the trained models into VTM 7.0, we need to export their parameters and apply the proposed simplifications. As explained in the paper, 3 multi-model schemes are considered, to deploy its parameters update the deployment config file at ```config/att_multi/``` and run:
+In order to integrate the trained models into VTM 7.0, we need to export their parameters and apply the proposed simplifications. As explained in the paper, 3 multi-model schemes are considered, to deploy its parameters update the deployment config file at ```config/deploy/``` and run:
 ```
 python deploy.py -c config/deploy/scheme[X].py
 ```
