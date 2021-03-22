@@ -38,7 +38,7 @@ Neural networks can be successfully used to improve several modules of advanced 
 [visualisation-fig]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/logos/visualisation.png
 
 ## Publication
-IEEE Journal of Selected Topics in Signal Processing. Find the paper discribing our work on [IEEE Xplore](https://ieeexplore.ieee.org/document/9292660).
+The software in this repository represents methods presented in "Attention-Based Neural Networks for Chroma Intra Prediction in Video Coding" which can be found at [IEEE Xplore](https://ieeexplore.ieee.org/document/9292660).
 
 Please cite with the following Bibtex code:
 ```
