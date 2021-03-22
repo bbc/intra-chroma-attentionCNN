@@ -10,11 +10,11 @@
 [AlanFmeaton-web]: https://www.insight-centre.org/users/alan-smeaton
 [NoelEOConnor-web]: https://www.insight-centre.org/our-team/prof-noel-oconnor/
 
-[MarcGorriz-photo]: https://github.com/bbc/intra-chroma-attentionCNN/blob/master/authors/MarcGorriz.jpg
-[SaverioBlasi-photo]: https://github.com/bbc/intra-chroma-attentionCNN/blob/master/authors/SaverioBlasi.jpg
-[MartaMrak-photo]: https://github.com/bbc/intra-chroma-attentionCNN/blob/master/authors/MartaMrak.jpg
-[AlanFmeaton-photo]: https://github.com/bbc/intra-chroma-attentionCNN/blob/master/authors/AlanFSmeaton.jpg
-[NoelEOConnor-photo]: https://github.com/bbc/intra-chroma-attentionCNN/blob/master/authors/NoelEOConnor.jpg
+[MarcGorriz-photo]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/authors/MarcGorriz.jpg
+[SaverioBlasi-photo]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/authors/SaverioBlasi.jpg
+[MartaMrak-photo]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/authors/MartaMrak.jpg
+[AlanFmeaton-photo]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/authors/AlanFSmeaton.jpg
+[NoelEOConnor-photo]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/authors/NoelEOConnor.jpg
 
 A joint collaboration between:
 
@@ -26,16 +26,16 @@ A joint collaboration between:
 [insight-web]: https://www.insight-centre.org/ 
 [dcu-web]: http://www.dcu.ie/
 
-[logo-bbc]: https://github.com/bbc/intra-chroma-attentionCNN/blob/master/logos/bbc.png  "BBC Research & Development"
-[logo-insight]: https://github.com/bbc/intra-chroma-attentionCNN/blob/master/logos/insight.jpg "Insight Centre for Data Analytics"
-[logo-dcu]: https://github.com/bbc/intra-chroma-attentionCNN/master/logos/dcu.png "Dublin City University"
+[logo-bbc]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/logos/bbc.png  "BBC Research & Development"
+[logo-insight]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/logos/insight.jpg "Insight Centre for Data Analytics"
+[logo-dcu]: https://github.com/bbc/intra-chroma-attentionCNN/main/logos/dcu.png "Dublin City University"
 
 ## Abstract
 Neural networks can be successfully used to improve several modules of advanced video coding schemes. In particular, compression of colour components was shown to greatly benefit from usage of machine learning models, thanks to the design of appropriate attention-based architectures that allow the prediction to exploit specific samples in the reference region. However, such architectures tend to be complex and computationally intense, and may be difficult to deploy in a practical video coding pipeline. This software implements the collection of simplifications presented in [this paper](https://github.com/bbc/intra-chroma-attentionCNN#publication) to reduce the complexity overhead of the attention-based architectures. The simplified models are integrated into the Versatile Video Coding (VVC) prediction pipeline, retaining compression efficiency of previous chroma intra-prediction methods based on neural networks, while offering different directions for significantly reducing coding complexity.
 
 ![visualisation-fig]
 
-[visualisation-fig]: https://github.com/bbc/intra-chroma-attentionCNN/blob/master/logos/visualisation.png
+[visualisation-fig]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/logos/visualisation.png
 
 ## Publication
 IEEE Journal of Selected Topics in Signal Processing. Find the paper discribing our work on [IEEE Xplore](https://ieeexplore.ieee.org/document/9292660).
