@@ -1,0 +1,35 @@
+From 53e06dfbfe9fc709901e17a0b7af50e33b5a627f Mon Sep 17 00:00:00 2001
+From: Marc Gorriz Blanch <marcb@rd017745.rd.bbc.co.uk>
+Date: Tue, 5 Oct 2021 17:43:58 +0100
+Subject: [PATCH] only square blocks constrain
+
+---
+ source/Lib/EncoderLib/EncModeCtrl.cpp | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/source/Lib/EncoderLib/EncModeCtrl.cpp b/source/Lib/EncoderLib/EncModeCtrl.cpp
+index 56da31c8..ac681baf 100644
+--- a/source/Lib/EncoderLib/EncModeCtrl.cpp
++++ b/source/Lib/EncoderLib/EncModeCtrl.cpp
+@@ -1452,6 +1452,18 @@ bool EncModeCtrlMTnoRQT::tryMode( const EncTestMode& encTestmode, const CodingSt
+     return false;
+   }
+ 
++  // Modification: Only square CUs
++  if (partitioner.currArea().lumaSize().width != partitioner.currArea().lumaSize().height)
++  {
++    return false;
++  }
++
++  // Modification: Only square CUs
++  if (partitioner.currArea().lumaSize().width > 32 && partitioner.currArea().lumaSize().height > 32)
++  {
++    return encTestmode.type == ETM_SPLIT_QT;
++  }
++
+   const PartSplit implicitSplit = partitioner.getImplicitSplit( cs );
+   const bool isBoundary         = implicitSplit != CU_DONT_SPLIT;
+ 
+-- 
+2.17.1
+
