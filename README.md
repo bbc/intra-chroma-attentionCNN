@@ -123,7 +123,7 @@ All the schemes are evaluated against a constrained VTM-7.0 anchor, whereby the 
 
 We collaborated with Northwestern Polytechnical University (Xi’an, China) to improve the schemes proposed in this work. Two new schemes for spatial information refinement are proposed: adding a down-sampling branch and adding location maps. A down-sampling filter is learnt, in order to select the most suitable down-sampling luma features for chroma prediction. Moreover, in order to allow the network to predict pixels with different importance levels, the position information of the current block and the boundary information are used to construct a feature map, called location map, which further guides the prediction process. 
 
-For more information, refer to [the pre-print paper](https://arxiv.org/abs/2109.11913) "Spatial Information Refinement for Chroma Intra Prediction in Video Coding", accepted for publication in APSIPA 2021. Moreover, an open-source implementation can be found in [this repository](https://github.com/Chengyi-Zou/intra-chroma-attentionCNN-refinement), where the proposed refinement schemes can be applied in top of VTM by means of the corresponding patch differences. 
+For more information, refer to the [pre-print paper](https://arxiv.org/abs/2109.11913) "Spatial Information Refinement for Chroma Intra Prediction in Video Coding", accepted for publication in APSIPA 2021. Moreover, an open-source implementation can be found in [this repository](https://github.com/Chengyi-Zou/intra-chroma-attentionCNN-refinement), where the proposed refinement schemes can be applied in top of VTM by means of the corresponding patch differences. 
 
 ## Acknowledgements
 This work has been conducted within the project
