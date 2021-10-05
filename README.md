@@ -28,7 +28,7 @@ A joint collaboration between:
 
 [logo-bbc]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/logos/bbc.png  "BBC Research & Development"
 [logo-insight]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/logos/insight.jpg "Insight Centre for Data Analytics"
-[logo-dcu]: https://github.com/bbc/intra-chroma-attentionCNN/main/logos/dcu.png "Dublin City University"
+[logo-dcu]: https://github.com/bbc/intra-chroma-attentionCNN/blob/main/logos/dcu.png "Dublin City University"
 
 ## Abstract
 Neural networks can be successfully used to improve several modules of advanced video coding schemes. In particular, compression of colour components was shown to greatly benefit from usage of machine learning models, thanks to the design of appropriate attention-based architectures that allow the prediction to exploit specific samples in the reference region. However, such architectures tend to be complex and computationally intense, and may be difficult to deploy in a practical video coding pipeline. This software implements the collection of simplifications presented in [this paper](https://github.com/bbc/intra-chroma-attentionCNN#publication) to reduce the complexity overhead of the attention-based architectures. The simplified models are integrated into the Versatile Video Coding (VVC) prediction pipeline, retaining compression efficiency of previous chroma intra-prediction methods based on neural networks, while offering different directions for significantly reducing coding complexity.
@@ -117,7 +117,7 @@ To compile the generated VTM-7.0 version follow the official instructions in ```
 
 ### Reproduce the results
 
-All the schemes are evaluated against a VTM-7.0 constrained anchor, whereby the VVC partitioning process is limited to using only square blocks of 4, 8 and 16 pixels. In order to generate the constrained VTM-7.0 anchor in this paper, apply the patch difference located at ```VTM-7.0-schemes/square_anchor.patch```.
+All the schemes are evaluated against a constrained VTM-7.0 anchor, whereby the VVC partitioning process is limited to using only square blocks of 4, 8 and 16 pixels. In order to generate the constrained VTM-7.0 anchor in this paper, apply the patch difference located at ```VTM-7.0-schemes/square_anchor.patch```.
 
 ## Acknowledgements
 This work has been conducted within the project
